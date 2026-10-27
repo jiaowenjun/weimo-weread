@@ -13,14 +13,14 @@ function fmtTs(v: unknown): string {
   return ms ? dayjs(ms).format('YYYY-MM-DD HH:mm') : '';
 }
 
-/** 单书笔记面板：按章节分组渲染划线 + 我的想法，可一键保存到服务端 */
-function BookNotesPanel({ bookId, onSaved }: { bookId: string; onSaved?: () => void }) {
+/** 单书笔记面板：按章节分组渲染划线 + 我的想法，可一键同步到服务端 */
+function BookNotesPanel({ bookId, onSynced }: { bookId: string; onSynced?: () => void }) {
   const { message } = AntApp.useApp();
   const { token } = theme.useToken();
   const [envelope, setEnvelope] = useState<CachedEnvelope<BookNotesData> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
   const load = useCallback(
     async (refresh = false) => {
@@ -66,20 +66,20 @@ function BookNotesPanel({ bookId, onSaved }: { bookId: string; onSaved?: () => v
       }));
   }, [notes]);
 
-  const saveBook = async () => {
-    setSaving(true);
+  const syncBook = async () => {
+    setSyncing(true);
     try {
       const res = await api.createTask({ book_ids: [bookId], wait_timeout: 30 });
       if (['completed', 'partial'].includes(res.status)) {
-        message.success(`已保存《${title}》到服务端（${res.items_count} 条）`);
-        onSaved?.();
+        message.success(`已同步《${title}》到服务端（${res.items_count} 条）`);
+        onSynced?.();
       } else {
-        message.info('保存仍在进行，请到「保存任务」页查看进度');
+        message.info('同步仍在进行，请到「同步任务」页查看进度');
       }
     } catch (e) {
       message.error((e as Error).message);
     } finally {
-      setSaving(false);
+      setSyncing(false);
     }
   };
 
@@ -92,9 +92,9 @@ function BookNotesPanel({ bookId, onSaved }: { bookId: string; onSaved?: () => v
         </span>
       }
       extra={
-        <Tooltip title="笔记原始数据（书/章节/划线/想法）长期保存在服务端 SQLite">
-          <Button size="small" icon={<SaveOutlined />} loading={saving} onClick={saveBook}>
-            保存此书
+        <Tooltip title="笔记原始数据（书/章节/划线/想法）同步到服务端 SQLite 长期保留">
+          <Button size="small" icon={<SaveOutlined />} loading={syncing} onClick={syncBook}>
+            同步此书
           </Button>
         </Tooltip>
       }
@@ -213,8 +213,8 @@ export default function Notes() {
         <Button key="refresh" icon={<ReloadOutlined />} loading={loading} onClick={() => load(false)}>
           刷新
         </Button>,
-        <Button key="export-all" type="primary" onClick={() => navigate('/saves')}>
-          全部保存
+        <Button key="sync-all" type="primary" onClick={() => navigate('/syncs')}>
+          全部同步
         </Button>,
       ]}
     >

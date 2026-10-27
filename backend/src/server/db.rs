@@ -1,7 +1,7 @@
 //! SQLite 连接与建表（内嵌 bootstrap SQL，不用 sqlx migrate）。
 //!
 //! BYOK 模型下存储按 Key 指纹（owner 列 / cache key 前缀）隔离，不同 Key
-//! 的缓存与已保存笔记互不混淆。表分两类：cache_entries 可再生（代理缓存）；
+//! 的缓存与已同步笔记互不混淆。表分两类：cache_entries 可再生（代理缓存）；
 //! books/notes 是长期资产（notes 存笔记原始 JSON），tasks/task_items 是任务调度状态。
 
 use anyhow::{Context, Result};
@@ -89,7 +89,7 @@ pub async fn connect(db_path: &std::path::Path) -> Result<SqlitePool> {
     // - v0.2 markdown 时代：exports 含 markdown/book_json 列
     // - v0.3 导出命名时代：表名还是 exports / export_items
     if needs_rebuild(&pool).await? {
-        tracing::warn!("检测到旧版库，重建表结构（缓存/已保存笔记将重新生成）");
+        tracing::warn!("检测到旧版库，重建表结构（缓存/已同步笔记将重新生成）");
         for table in [
             "notes",
             "task_items",

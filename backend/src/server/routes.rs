@@ -41,11 +41,11 @@ pub fn build_app(state: AppState) -> Router {
         .route("/search", get(get_search))
         .route("/gateway/apis", get(get_gateway_apis))
         .route("/gateway/call", post(post_gateway_call))
-        // 保存任务
-        .route("/saves", get(list_saves).post(create_save))
-        .route("/saves/{task_id}", get(get_save).delete(delete_save))
-        .route("/saves/{task_id}/result", get(get_result))
-        .route("/saves/{task_id}/events", get(get_save_events))
+        // 同步任务
+        .route("/syncs", get(list_syncs).post(create_sync))
+        .route("/syncs/{task_id}", get(get_sync).delete(delete_sync))
+        .route("/syncs/{task_id}/result", get(get_result))
+        .route("/syncs/{task_id}/events", get(get_sync_events))
         // 系统
         .route("/server/info", get(server_info))
         .layer(middleware::from_fn_with_state(
@@ -379,7 +379,7 @@ async fn post_gateway_call(
 }
 
 // --------------------------------------------------------------------------- //
-// /saves
+// /syncs
 // --------------------------------------------------------------------------- //
 
 #[derive(serde::Deserialize, Default)]
@@ -393,8 +393,8 @@ struct CreateReq {
     wait_timeout: u64,
 }
 
-/// 创建保存任务。body 手动解析以保证错误信封统一（400 而非 axum 默认 422）。
-async fn create_save(
+/// 创建同步任务。body 手动解析以保证错误信封统一（400 而非 axum 默认 422）。
+async fn create_sync(
     State(state): State<AppState>,
     Extension(WereadKey(key)): Extension<WereadKey>,
     body: Bytes,
@@ -420,7 +420,7 @@ async fn create_save(
     )
     .await?;
 
-    // 有限同步等待：wait_timeout 内完成则返回终态（单书保存秒级完成）
+    // 有限同步等待：wait_timeout 内完成则返回终态（单书同步秒级完成）
     let mut view = outcome.view;
     if req.wait_timeout > 0 && !TERMINAL_STATUSES.contains(&view.status.as_str()) {
         let deadline =
@@ -447,7 +447,7 @@ async fn create_save(
     Ok((code, Json(body)).into_response())
 }
 
-async fn get_save(
+async fn get_sync(
     State(state): State<AppState>,
     Extension(WereadKey(key)): Extension<WereadKey>,
     Path(task_id): Path<String>,
@@ -462,7 +462,7 @@ struct ListQuery {
     cursor: Option<i64>,
 }
 
-async fn list_saves(
+async fn list_syncs(
     State(state): State<AppState>,
     Extension(WereadKey(key)): Extension<WereadKey>,
     Query(q): Query<ListQuery>,
@@ -490,7 +490,7 @@ async fn list_saves(
     })))
 }
 
-async fn delete_save(
+async fn delete_sync(
     State(state): State<AppState>,
     Extension(WereadKey(key)): Extension<WereadKey>,
     Path(task_id): Path<String>,
@@ -518,7 +518,7 @@ fn task_event(name: &str, view: &TaskView) -> Result<Event, Infallible> {
 
 /// SSE 流：先推当前快照（progress），随后仅在进度变更时推送；
 /// 终态推 done（partial 也归 done，内容里带 error）/ error 后关流。
-async fn get_save_events(
+async fn get_sync_events(
     State(state): State<AppState>,
     Extension(WereadKey(key)): Extension<WereadKey>,
     Path(task_id): Path<String>,

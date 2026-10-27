@@ -13,7 +13,7 @@ import {
 import Overview from './pages/Overview';
 import Shelf from './pages/Shelf';
 import Notes from './pages/Notes';
-import Saves from './pages/Saves';
+import Sync from './pages/Sync';
 import { getApiBase, getWereadKey, setApiBase, setWereadKey } from './api';
 
 /** 右上角连接设置：API 地址 + 微信读书 API Key（BYOK，必填） */
@@ -78,7 +78,7 @@ function Layout() {
           { path: '/', name: '概览' },
           { path: '/shelf', name: '书架' },
           { path: '/notes', name: '笔记' },
-          { path: '/saves', name: '保存任务' },
+          { path: '/syncs', name: '同步任务' },
         ],
       }}
       menuItemRender={(item, dom) => (
@@ -105,7 +105,7 @@ export default function App() {
           <Route index element={<Overview />} />
           <Route path="shelf" element={<Shelf />} />
           <Route path="notes" element={<Notes />} />
-          <Route path="saves" element={<Saves />} />
+          <Route path="syncs" element={<Sync />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

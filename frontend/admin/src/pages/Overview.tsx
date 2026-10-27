@@ -106,7 +106,7 @@ export default function Overview() {
           showIcon
           style={{ marginBottom: 16 }}
           message="无法连接服务器"
-          description={`请确认服务器已启动（默认 127.0.0.1:8081，需配置 WEREAD_API_KEY），或点击右上角「连接」修改 API 地址。错误：${connError}`}
+          description={`请确认服务器已启动（默认 127.0.0.1:8081），或点击右上角「连接」修改 API 地址。错误：${connError}`}
         />
       )}
       {circuitOpen && (
@@ -136,14 +136,14 @@ export default function Overview() {
         <Col xs={24} sm={12} lg={6}>
           <Card size="small">
             <Statistic
-              title="队列（保存中 / 排队书）"
+              title="队列（同步中 / 排队书）"
               value={info ? `${info.queue.running_items} / ${info.queue.waiting}` : '—'}
             />
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
           <Card size="small">
-            <Statistic title="已保存书数" value={info ? info.queue.saved_books : '—'} />
+            <Statistic title="已同步书数" value={info ? info.queue.synced_books : '—'} />
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
@@ -248,12 +248,12 @@ export default function Overview() {
       </ProCard>
 
       <ProCard
-        title="最近保存任务"
+        title="最近同步任务"
         size="small"
         style={{ marginTop: 16 }}
         headerBordered
         extra={
-          <Button type="link" size="small" onClick={() => navigate('/saves')}>
+          <Button type="link" size="small" onClick={() => navigate('/syncs')}>
             查看全部
           </Button>
         }
@@ -263,7 +263,7 @@ export default function Overview() {
           rowKey="task_id"
           pagination={false}
           dataSource={recent}
-          onRow={(r) => ({ onClick: () => navigate(`/saves?task=${r.task_id}`), style: { cursor: 'pointer' } })}
+          onRow={(r) => ({ onClick: () => navigate(`/syncs?task=${r.task_id}`), style: { cursor: 'pointer' } })}
           columns={[
             { title: '任务 ID', dataIndex: 'task_id', ellipsis: true },
             { title: '状态', dataIndex: 'status', width: 100, render: (_, r) => <TaskStatusTag status={r.status} /> },

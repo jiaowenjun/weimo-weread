@@ -122,7 +122,7 @@ export default function TaskDetailDrawer({
             <Descriptions.Item label="书（完成/总数）">
               {task.progress.done_books} / {task.progress.total_books}
             </Descriptions.Item>
-            <Descriptions.Item label="已导条目（划线+想法）">{task.items_count}</Descriptions.Item>
+            <Descriptions.Item label="已同步条目（划线+想法）">{task.items_count}</Descriptions.Item>
             <Descriptions.Item label="创建时间" span={2}>
               {dayjs(task.created_at).format('YYYY-MM-DD HH:mm:ss')}
             </Descriptions.Item>
@@ -155,7 +155,7 @@ export default function TaskDetailDrawer({
           )}
 
           {result && (
-            <Card size="small" title="保存结果">
+            <Card size="small" title="同步结果">
               <Descriptions size="small" column={1} style={{ marginBottom: 8 }}>
                 <Descriptions.Item label="汇总">
                   {result.summary.succeeded} 本成功

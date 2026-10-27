@@ -3,15 +3,15 @@ import { PlusOutlined } from '@ant-design/icons';
 import { ModalForm, ProFormSwitch, ProFormTextArea } from '@ant-design/pro-components';
 import { api } from '../api';
 
-export default function CreateExportModal({ onCreated }: { onCreated: (taskId: string) => void }) {
+export default function CreateSyncModal({ onCreated }: { onCreated: (taskId: string) => void }) {
   const { message } = AntApp.useApp();
   return (
     <ModalForm
-      title="新建保存任务"
+      title="新建同步任务"
       width={520}
       trigger={
         <Button type="primary" icon={<PlusOutlined />}>
-          新建保存
+          新建同步
         </Button>
       }
       modalProps={{ destroyOnClose: true }}
@@ -33,7 +33,7 @@ export default function CreateExportModal({ onCreated }: { onCreated: (taskId: s
             refresh: values.refresh ?? false,
           });
           message.success(
-            `任务已创建（${res.skipped_cached ?? 0} 本命中已有保存，${res.queued_books ?? 0} 本排队抓取）`,
+            `任务已创建（${res.skipped_cached ?? 0} 本命中已有同步，${res.queued_books ?? 0} 本排队抓取）`,
           );
           onCreated(res.task_id);
           return true;
@@ -45,7 +45,7 @@ export default function CreateExportModal({ onCreated }: { onCreated: (taskId: s
     >
       <ProFormSwitch
         name="allBooks"
-        label="保存全部有笔记的书"
+        label="同步全部有笔记的书"
         extra="关闭后可手动指定 bookId（笔记页的列表里有）"
       />
       <ProFormTextArea
@@ -54,7 +54,7 @@ export default function CreateExportModal({ onCreated }: { onCreated: (taskId: s
         placeholder={'每行一个或逗号分隔\n如：3300028061, 934835'}
         dependencies={['allBooks']}
       />
-      <ProFormSwitch name="refresh" label="强制重新保存" extra="已保存的书也重抓并覆盖（默认跳过）" />
+      <ProFormSwitch name="refresh" label="强制重新同步" extra="已同步的书也重抓并覆盖（默认跳过）" />
     </ModalForm>
   );
 }

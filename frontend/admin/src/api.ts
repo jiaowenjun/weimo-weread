@@ -95,32 +95,32 @@ export const api = {
     return request<CachedEnvelope<ReadData>>(`/readdata?${qs.toString()}`);
   },
 
-  // ---- 保存任务 ----
+  // ---- 同步任务 ----
   listTasks: (query: { status?: string; limit?: number; cursor?: number }) => {
     const qs = new URLSearchParams();
     if (query.status) qs.set('status', query.status);
     qs.set('limit', String(query.limit ?? 100));
     if (query.cursor != null) qs.set('cursor', String(query.cursor));
-    return request<TaskListResponse>(`/saves?${qs.toString()}`);
+    return request<TaskListResponse>(`/syncs?${qs.toString()}`);
   },
 
-  getTask: (taskId: string) => request<TaskView>(`/saves/${taskId}`),
+  getTask: (taskId: string) => request<TaskView>(`/syncs/${taskId}`),
 
   /** SSE 订阅地址（EventSource 无法设置 Header，Key 经 ?key= 查询参数传递） */
   taskEventsUrl: (taskId: string) => {
     const key = getWereadKey();
     const q = key ? `?key=${encodeURIComponent(key)}` : '';
-    return `${getApiBase()}/saves/${encodeURIComponent(taskId)}/events${q}`;
+    return `${getApiBase()}/syncs/${encodeURIComponent(taskId)}/events${q}`;
   },
 
   createTask: (body: { book_ids?: string[] | null; refresh?: boolean; wait_timeout?: number }) =>
-    request<CreateTaskResponse>('/saves', {
+    request<CreateTaskResponse>('/syncs', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
 
   deleteTask: (taskId: string) =>
-    request<void>(`/saves/${taskId}`, { method: 'DELETE' }),
+    request<void>(`/syncs/${taskId}`, { method: 'DELETE' }),
 
-  getResult: (taskId: string) => request<ResultView>(`/saves/${taskId}/result`),
+  getResult: (taskId: string) => request<ResultView>(`/syncs/${taskId}/result`),
 };

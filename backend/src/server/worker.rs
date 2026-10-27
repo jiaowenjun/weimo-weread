@@ -1,4 +1,4 @@
-//! 保存 worker——DB 即队列，单 worker 串行。
+//! 同步 worker——DB 即队列，单 worker 串行。
 //!
 //! BYOK：每本书所属任务记录了创建者的 API Key，worker 经 AppState 的
 //! GatewayRegistry 按 Key 解析网关客户端；节流锁全局共享（跨所有 Key）。
@@ -58,12 +58,12 @@ pub async fn run_worker(state: AppState) {
     }
 }
 
-/// 处理一本到期书（抓取保存 + 状态推进）。返回是否处理了；
+/// 处理一本到期书（抓取同步 + 状态推进）。返回是否处理了；
 /// 供 run_worker 循环与测试复用（测试可直接驱动而无需起后台 worker）。
 pub async fn process_next_due(state: &AppState) -> Result<bool> {
     match pick_due_item(&state.pool).await? {
         Some(item) => {
-            save_item(state, &item).await?;
+            sync_item(state, &item).await?;
             Ok(true)
         }
         None => Ok(false),
@@ -83,7 +83,7 @@ async fn pick_due_item(pool: &SqlitePool) -> Result<Option<DueItem>> {
     .bind(ServerConfig::now_ms())
     .fetch_optional(pool)
     .await
-    .context("查询到期保存项失败")?;
+    .context("查询到期同步项失败")?;
 
     Ok(row.map(|r| DueItem {
         task_id: r.get("task_id"),
@@ -93,7 +93,7 @@ async fn pick_due_item(pool: &SqlitePool) -> Result<Option<DueItem>> {
     }))
 }
 
-async fn save_item(state: &AppState, item: &DueItem) -> Result<()> {
+async fn sync_item(state: &AppState, item: &DueItem) -> Result<()> {
     let now = ServerConfig::now_ms();
 
     sqlx::query(
@@ -104,7 +104,7 @@ async fn save_item(state: &AppState, item: &DueItem) -> Result<()> {
     .bind(&item.book_id)
     .execute(&state.pool)
     .await
-    .context("标记保存项 running 失败")?;
+    .context("标记同步项 running 失败")?;
 
     // 首次处理的书把任务置为 running
     sqlx::query(
@@ -125,7 +125,7 @@ async fn save_item(state: &AppState, item: &DueItem) -> Result<()> {
     };
 
     let outcome = match gateway.as_deref() {
-        Some(gw) => save_book_once(state, gw, &item.api_key, &item.book_id).await,
+        Some(gw) => sync_book_once(state, gw, &item.api_key, &item.book_id).await,
         None => Err(GatewayError::Io("任务缺少有效的 API Key（旧版任务请重建）".into())),
     };
 
@@ -144,15 +144,15 @@ async fn save_item(state: &AppState, item: &DueItem) -> Result<()> {
             .bind(&item.book_id)
             .execute(&state.pool)
             .await
-            .context("标记保存项 done 失败")?;
+            .context("标记同步项 done 失败")?;
             info!(
                 task_id = %item.task_id,
                 book_id = %item.book_id,
                 bookmarks, reviews,
-                "书籍保存完成"
+                "书籍同步完成"
             );
         }
-        Err(e) => handle_save_error(state, item, e).await?,
+        Err(e) => handle_sync_error(state, item, e).await?,
     }
 
     service::recompute_task_status(state, &item.task_id).await?;
@@ -161,7 +161,7 @@ async fn save_item(state: &AppState, item: &DueItem) -> Result<()> {
 }
 
 /// 抓取单书笔记原始 JSON，写入 notes 表（按 Key 指纹隔离）。
-async fn save_book_once(
+async fn sync_book_once(
     state: &AppState,
     gw: &dyn GatewayApi,
     api_key: &str,
@@ -191,7 +191,7 @@ async fn save_book_once(
     let reviews = match fetch::fetch_my_reviews(gw, book_id).await {
         Ok(v) => v,
         Err(e) => {
-            warn!(error = %e, "想法列表获取失败，保存不含想法（与 CLI 行为一致）");
+            warn!(error = %e, "想法列表获取失败，同步不含想法（与 CLI 行为一致）");
             Vec::new()
         }
     };
@@ -240,14 +240,14 @@ async fn save_book_once(
     Ok((bm_count, rv_count))
 }
 
-async fn handle_save_error(state: &AppState, item: &DueItem, e: GatewayError) -> Result<()> {
+async fn handle_sync_error(state: &AppState, item: &DueItem, e: GatewayError) -> Result<()> {
     let now = ServerConfig::now_ms();
     warn!(
         task_id = %item.task_id,
         book_id = %item.book_id,
         attempt = item.attempts + 1,
         error = %e,
-        "书籍保存失败"
+        "书籍同步失败"
     );
 
     // 业务错误（无效 bookId 等）永久失败；其余按次数退避重试，超限终态失败
@@ -266,7 +266,7 @@ async fn handle_save_error(state: &AppState, item: &DueItem, e: GatewayError) ->
         .bind(&item.book_id)
         .execute(&state.pool)
         .await
-        .context("标记保存项 error 失败")?;
+        .context("标记同步项 error 失败")?;
         if !permanent {
             state.record_crawl_failure();
         }
@@ -285,7 +285,7 @@ async fn handle_save_error(state: &AppState, item: &DueItem, e: GatewayError) ->
         .bind(&item.book_id)
         .execute(&state.pool)
         .await
-        .context("标记保存项退避失败")?;
+        .context("标记同步项退避失败")?;
         if tripped {
             info!("熔断已触发，worker 将暂停抓取直至冷却结束");
         }

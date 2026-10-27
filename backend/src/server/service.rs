@@ -33,7 +33,7 @@ fn ms_to_rfc3339(ms: i64) -> String {
 fn new_task_id() -> String {
     let now = ServerConfig::now_ms() as u64;
     let rand6: u32 = rand::thread_rng().gen_range(0x100000..=0xFFFFFF);
-    format!("wexp_{now:012x}{rand6:06x}")
+    format!("wsync_{now:012x}{rand6:06x}")
 }
 
 // --------------------------------------------------------------------------- //
@@ -420,7 +420,7 @@ pub fn validate_book_id(id: &str) -> AppResult<()> {
 }
 
 // --------------------------------------------------------------------------- //
-// 保存任务
+// 同步任务
 // --------------------------------------------------------------------------- //
 
 #[derive(Debug, Clone)]
@@ -473,7 +473,7 @@ pub async fn create_task(
     };
     if requested.is_empty() {
         return Err(AppError::InvalidArgument(
-            "没有可保存的书（笔记本为空或 book_ids 无效）".to_string(),
+            "没有可同步的书（笔记本为空或 book_ids 无效）".to_string(),
         ));
     }
 
@@ -487,14 +487,14 @@ pub async fn create_task(
         return Err(AppError::TooManyTasks);
     }
 
-    // 该 Key 已保存的书直接跳过（除非 refresh）
+    // 该 Key 已同步的书直接跳过（除非 refresh）
     struct Item {
         book_id: String,
-        saved: Option<(i64, i64)>,
+        synced: Option<(i64, i64)>,
     }
     let mut items: Vec<Item> = Vec::with_capacity(requested.len());
     for book_id in &requested {
-        let saved: Option<(i64, i64)> = if input.refresh {
+        let synced: Option<(i64, i64)> = if input.refresh {
             None
         } else {
             sqlx::query_as("SELECT bookmarks, reviews FROM notes WHERE owner = ? AND book_id = ?")
@@ -505,10 +505,10 @@ pub async fn create_task(
         };
         items.push(Item {
             book_id: book_id.clone(),
-            saved,
+            synced,
         });
     }
-    let queued_count = items.iter().filter(|i| i.saved.is_none()).count() as i64;
+    let queued_count = items.iter().filter(|i| i.synced.is_none()).count() as i64;
 
     // 队列长度上限
     let waiting: i64 =
@@ -544,19 +544,19 @@ pub async fn create_task(
         )
         .bind(&task_id)
         .bind(&item.book_id)
-        .bind(if item.saved.is_some() { "skipped" } else { "waiting" })
-        .bind(item.saved.map(|c| c.0))
-        .bind(item.saved.map(|c| c.1))
+        .bind(if item.synced.is_some() { "skipped" } else { "waiting" })
+        .bind(item.synced.map(|c| c.0))
+        .bind(item.synced.map(|c| c.1))
         .bind(now)
         .execute(&state.pool)
         .await?;
     }
 
-    let skipped_cached = items.iter().filter(|i| i.saved.is_some()).count();
+    let skipped_cached = items.iter().filter(|i| i.synced.is_some()).count();
     if queued_count > 0 {
         state.wake_worker();
     } else {
-        // 全部命中已有保存 → 直接终态
+        // 全部命中已有同步 → 直接终态
         recompute_task_status(state, &task_id).await?;
     }
 
@@ -696,7 +696,7 @@ pub async fn get_task(state: &AppState, key: &str, task_id: &str) -> AppResult<T
         started_at: row.get::<Option<i64>, _>("started_ms").map(ms_to_rfc3339),
         finished_at: row.get::<Option<i64>, _>("finished_ms").map(ms_to_rfc3339),
         expires_at: row.get::<Option<i64>, _>("expires_ms").map(ms_to_rfc3339),
-        result_url: format!("/api/v1/saves/{task_id}/result"),
+        result_url: format!("/api/v1/syncs/{task_id}/result"),
     })
 }
 
@@ -747,7 +747,7 @@ pub async fn list_tasks(
         }
         let task_id: String = r.get("task_id");
         summaries.push(TaskSummary {
-            url: format!("/api/v1/saves/{task_id}"),
+            url: format!("/api/v1/syncs/{task_id}"),
             task_id,
             status: r.get("status"),
             items_count: r.get("items_count"),
@@ -936,8 +936,8 @@ pub async fn recompute_task_status(state: &AppState, task_id: &str) -> anyhow::R
         .fetch_all(&state.pool)
         .await?;
         let error_json = json!({
-            "code": if status == "partial" { "SAVE_PARTIAL" } else { "SAVE_FAILED" },
-            "message": format!("{error} 本书保存失败"),
+            "code": if status == "partial" { "SYNC_PARTIAL" } else { "SYNC_FAILED" },
+            "message": format!("{error} 本书同步失败"),
             "failed_books": failed_books
                 .iter()
                 .map(|(id, e)| json!({"book_id": id, "error": e}))
@@ -1012,7 +1012,7 @@ pub async fn server_info(state: &AppState) -> AppResult<Value> {
     )
     .fetch_one(&state.pool)
     .await?;
-    let saved_books: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes")
+    let synced_books: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes")
         .fetch_one(&state.pool)
         .await?;
     let circuit_remaining = state.circuit_remaining_ms();
@@ -1030,7 +1030,7 @@ pub async fn server_info(state: &AppState) -> AppResult<Value> {
             "waiting": waiting,
             "running_items": running_items,
             "running_tasks": running_tasks,
-            "saved_books": saved_books,
+            "synced_books": synced_books,
         },
         "circuit": {
             "threshold": state.config.circuit_threshold,
