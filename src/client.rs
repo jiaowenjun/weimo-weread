@@ -1,5 +1,9 @@
+//! 微信读书 Agent Gateway 客户端——async 协议实现 + 可注入的调用抽象。
+//!
+//! CLI 与服务器共享本实现；服务器另在 `server::gateway` 包一层全局节流，
+//! 测试经 [`GatewayApi`] trait 注入 fake。
+
 use std::fmt;
-use std::thread::sleep;
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -8,43 +12,53 @@ pub const GATEWAY_URL: &str = "https://i.weread.qq.com/api/agent/gateway";
 pub const SKILL_VERSION: &str = "1.0.5"; // 官方 Skill 当前版本(2026-10 实测); 升级时服务端会随响应返回 upgrade_info
 pub const KEY_PAGE: &str = "https://weread.qq.com/r/weread-skills";
 
-/// 网关错误。退出码约定: MissingAuth=2, Upgrade=3, 其余=1。
-#[derive(Debug)]
+/// 网关错误。
+#[derive(Debug, thiserror::Error)]
 pub enum GatewayError {
+    #[error("缺少 API Key: 请设置 WEREAD_API_KEY 环境变量或用 --key 传入 (获取页面: {KEY_PAGE})")]
     MissingAuth,
     /// 服务端要求升级 skill_version(响应仅含 upgrade_info 无业务数据时才阻断)
+    #[error("需要升级: {0}")]
     Upgrade(String),
+    #[error("[errcode={errcode}] {message}")]
     Api { errcode: String, message: String },
+    #[error("[http_{status}] {body}")]
     Http { status: u16, body: String },
+    #[error("[invalid_json] {0}")]
     InvalidJson(String),
+    /// 上游超时(网关 499 或请求超时)
+    #[error("[timeout] 上游超时 (attempts={0})")]
+    Timeout(u32),
+    #[error("[network] {message} (attempts={attempts})")]
     Network { message: String, attempts: u32 },
+    #[error("[io] {0}")]
     Io(String),
 }
 
-impl fmt::Display for GatewayError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl GatewayError {
+    /// 网络/超时/5xx/429 类可重试；业务错误(无效 bookId 等)与鉴权问题不重试。
+    pub fn is_transient(&self) -> bool {
         match self {
-            GatewayError::MissingAuth => write!(
-                f,
-                "缺少 API Key: 请设置 WEREAD_API_KEY 环境变量或用 --key 传入 (获取页面: {})",
-                KEY_PAGE
-            ),
-            GatewayError::Upgrade(m) => write!(f, "需要升级: {}", m),
-            GatewayError::Api { errcode, message } => write!(f, "[errcode={}] {}", errcode, message),
-            GatewayError::Http { status, body } => write!(f, "[http_{}] {}", status, body),
-            GatewayError::InvalidJson(m) => write!(f, "[invalid_json] {}", m),
-            GatewayError::Network { message, attempts } => {
-                write!(f, "[network] {} (attempts={})", message, attempts)
-            }
-            GatewayError::Io(m) => write!(f, "[io] {}", m),
+            GatewayError::Network { .. }
+            | GatewayError::Timeout(_)
+            | GatewayError::InvalidJson(_) => true,
+            GatewayError::Http { status, .. } => *status == 499 || *status == 429 || *status >= 500,
+            _ => false,
         }
     }
 }
 
-impl std::error::Error for GatewayError {}
+/// 网关调用抽象——生产实现为 [`WereadClient`]，测试注入 fake。
+pub trait GatewayApi: Send + Sync {
+    fn call(
+        &self,
+        api_name: &str,
+        params: Value,
+    ) -> impl std::future::Future<Output = Result<Value, GatewayError>> + Send;
+}
 
 pub struct WereadClient {
-    http: reqwest::blocking::Client,
+    http: reqwest::Client,
     api_key: String,
     base_url: String,
 }
@@ -60,7 +74,7 @@ impl WereadClient {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .ok_or(GatewayError::MissingAuth)?;
-        let http = reqwest::blocking::Client::builder()
+        let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .user_agent("weread-notes-rs/0.1")
             .build()
@@ -81,7 +95,7 @@ impl WereadClient {
     }
 
     /// 调用一个 api_name。params 需为 JSON 对象(或 Null), 业务参数平铺合并进请求体顶层。
-    pub fn call(&self, api_name: &str, params: Value) -> Result<Value, GatewayError> {
+    pub async fn call(&self, api_name: &str, params: Value) -> Result<Value, GatewayError> {
         let mut body = json!({ "api_name": api_name, "skill_version": SKILL_VERSION });
         if let Value::Object(src) = params {
             if let Value::Object(dst) = &mut body {
@@ -90,10 +104,10 @@ impl WereadClient {
                 }
             }
         }
-        self.call_with_retry(api_name, body)
+        self.call_with_retry(body).await
     }
 
-    fn call_with_retry(&self, api_name: &str, body: Value) -> Result<Value, GatewayError> {
+    async fn call_with_retry(&self, body: Value) -> Result<Value, GatewayError> {
         const MAX_ATTEMPTS: u32 = 3;
         let mut last_err = String::new();
         for attempt in 1..=MAX_ATTEMPTS {
@@ -102,39 +116,41 @@ impl WereadClient {
                 .post(&self.base_url)
                 .bearer_auth(&self.api_key)
                 .json(&body)
-                .send();
+                .send()
+                .await;
             match resp {
                 Err(e) => {
-                    let msg = e.to_string();
-                    let retryable = e.is_timeout() || e.is_connect() || e.is_request();
-                    last_err = msg;
+                    let is_timeout = e.is_timeout();
+                    let retryable = is_timeout || e.is_connect() || e.is_request();
+                    last_err = e.to_string();
                     if attempt < MAX_ATTEMPTS && retryable {
-                        sleep(Duration::from_millis(150 * attempt as u64));
+                        tokio::time::sleep(Duration::from_millis(150 * attempt as u64)).await;
                         continue;
                     }
-                    return Err(GatewayError::Network { message: last_err, attempts: attempt });
+                    return Err(if is_timeout {
+                        GatewayError::Timeout(attempt)
+                    } else {
+                        GatewayError::Network { message: last_err, attempts: attempt }
+                    });
                 }
                 Ok(resp) => {
                     let status = resp.status().as_u16();
-                    let text = resp
-                        .text()
-                        .map_err(|e| GatewayError::Network { message: e.to_string(), attempts: attempt })?;
+                    let text = resp.text().await.map_err(|e| GatewayError::Network {
+                        message: e.to_string(),
+                        attempts: attempt,
+                    })?;
                     if status == 499 {
                         // 上游超时专用状态码, 可重试
                         if attempt < MAX_ATTEMPTS {
-                            sleep(Duration::from_millis(150 * attempt as u64));
+                            tokio::time::sleep(Duration::from_millis(150 * attempt as u64)).await;
                             continue;
                         }
-                        return Err(GatewayError::Network {
-                            message: "upstream timeout (HTTP 499)".into(),
-                            attempts: attempt,
-                        });
+                        return Err(GatewayError::Timeout(attempt));
                     }
                     return self.parse_response(status, text);
                 }
             }
         }
-        let _ = api_name;
         Err(GatewayError::Network { message: last_err, attempts: MAX_ATTEMPTS })
     }
 
@@ -162,7 +178,7 @@ impl WereadClient {
             if !has_payload {
                 return Err(GatewayError::Upgrade(msg.to_string()));
             }
-            eprintln!("[!] 升级提示(已忽略, 数据正常返回): {}", msg);
+            tracing::warn!("升级提示(已忽略, 数据正常返回): {}", msg);
         }
 
         let errcode = data.get("errcode");
@@ -189,5 +205,17 @@ impl WereadClient {
             return Err(GatewayError::Http { status, body });
         }
         Ok(data)
+    }
+}
+
+impl GatewayApi for WereadClient {
+    async fn call(&self, api_name: &str, params: Value) -> Result<Value, GatewayError> {
+        WereadClient::call(self, api_name, params).await
+    }
+}
+
+impl fmt::Display for WereadClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "WereadClient({})", self.base_url)
     }
 }

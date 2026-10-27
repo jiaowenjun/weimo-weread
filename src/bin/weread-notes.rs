@@ -1,10 +1,7 @@
-mod client;
-mod commands;
-mod markdown;
-
 use clap::{Parser, Subcommand};
 
-use client::{GatewayError, WereadClient, GATEWAY_URL};
+use weread_notes::client::{GatewayError, WereadClient, GATEWAY_URL};
+use weread_notes::commands;
 
 #[derive(Parser)]
 #[command(
@@ -73,9 +70,17 @@ fn gw_err(e: GatewayError) -> (String, i32) {
     (e.to_string(), code)
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "warn".into()),
+        )
+        .with_target(false)
+        .init();
     let cli = Cli::parse();
-    let code = match run(cli) {
+    let code = match run(cli).await {
         Ok(()) => 0,
         Err((msg, code)) => {
             if !msg.is_empty() {
@@ -87,19 +92,25 @@ fn main() {
     std::process::exit(code);
 }
 
-fn run(cli: Cli) -> Result<(), (String, i32)> {
+async fn run(cli: Cli) -> Result<(), (String, i32)> {
     let client = WereadClient::new(cli.key.clone(), &cli.base_url, cli.timeout).map_err(gw_err)?;
     eprintln!("[key {} -> {}]", mask(client.api_key()), client.base_url());
     match cli.command {
         Command::Notebooks { limit, page_size } => {
-            commands::cmd_notebooks(&client, limit, page_size).map_err(gw_err)
+            commands::cmd_notebooks(&client, limit, page_size)
+                .await
+                .map_err(gw_err)
         }
         Command::Export { book_id, output } => {
-            commands::cmd_export(&client, &book_id, output.as_deref()).map_err(gw_err)
+            commands::cmd_export(&client, &book_id, output.as_deref())
+                .await
+                .map_err(gw_err)
         }
         Command::Raw { api_name, params } => {
-            commands::cmd_raw(&client, &api_name, &params).map_err(gw_err)
+            commands::cmd_raw(&client, &api_name, &params)
+                .await
+                .map_err(gw_err)
         }
-        Command::Apis => commands::cmd_apis(&client).map_err(gw_err),
+        Command::Apis => commands::cmd_apis(&client).await.map_err(gw_err),
     }
 }
