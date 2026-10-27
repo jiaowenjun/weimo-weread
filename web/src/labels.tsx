@@ -2,7 +2,7 @@ import { Tag } from 'antd';
 
 export const TASK_STATUS_META: Record<string, { label: string; color: string }> = {
   queued: { label: '排队中', color: 'default' },
-  running: { label: '导出中', color: 'processing' },
+  running: { label: '保存中', color: 'processing' },
   completed: { label: '已完成', color: 'success' },
   partial: { label: '部分成功', color: 'warning' },
   failed: { label: '失败', color: 'error' },
@@ -18,7 +18,7 @@ export function TaskStatusTag({ status }: { status: string }) {
 export function BookStateTag({ state }: { state: string }) {
   const meta: Record<string, { label: string; color: string }> = {
     waiting: { label: '排队', color: 'default' },
-    running: { label: '导出中', color: 'processing' },
+    running: { label: '保存中', color: 'processing' },
     done: { label: '完成', color: 'success' },
     skipped: { label: '已缓存', color: 'cyan' },
     error: { label: '失败', color: 'error' },

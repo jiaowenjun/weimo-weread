@@ -210,11 +210,11 @@ async fn drain_worker(t: &TestApp) {
     while worker::process_next_due(&t.state).await.unwrap() {}
 }
 
-async fn create_export(t: &TestApp, body: Value) -> (StatusCode, Value) {
+async fn create_save(t: &TestApp, body: Value) -> (StatusCode, Value) {
     let resp = t
         .app
         .clone()
-        .oneshot(req_json("POST", "/api/v1/exports", body))
+        .oneshot(req_json("POST", "/api/v1/saves", body))
         .await
         .unwrap();
     let status = resp.status();
@@ -511,7 +511,7 @@ async fn upstream_failure_falls_back_to_stale_cache() {
 }
 
 // --------------------------------------------------------------------------- //
-// 导出任务
+// 保存任务
 // --------------------------------------------------------------------------- //
 
 #[tokio::test]
@@ -528,9 +528,9 @@ async fn markdown_endpoint_removed() {
 }
 
 #[tokio::test]
-async fn export_single_book_persists_raw_json() {
+async fn save_single_book_persists_raw_json() {
     let t = setup().await;
-    let (status, v) = create_export(&t, json!({"book_ids": ["B1"]})).await;
+    let (status, v) = create_save(&t, json!({"book_ids": ["B1"]})).await;
     assert_eq!(status, StatusCode::ACCEPTED);
     assert_eq!(v["status"], json!("queued"));
     let task_id = v["task_id"].as_str().unwrap().to_string();
@@ -540,7 +540,7 @@ async fn export_single_book_persists_raw_json() {
     let resp = t
         .app
         .clone()
-        .oneshot(req("GET", &format!("/api/v1/exports/{task_id}")))
+        .oneshot(req("GET", &format!("/api/v1/saves/{task_id}")))
         .await
         .unwrap();
     let v = body_json(resp).await;
@@ -553,7 +553,7 @@ async fn export_single_book_persists_raw_json() {
     let resp = t
         .app
         .clone()
-        .oneshot(req("GET", &format!("/api/v1/exports/{task_id}/result")))
+        .oneshot(req("GET", &format!("/api/v1/saves/{task_id}/result")))
         .await
         .unwrap();
     let v = body_json(resp).await;
@@ -565,7 +565,7 @@ async fn export_single_book_persists_raw_json() {
 
     // 原始 JSON 直接入库：书/章节/划线/想法全量保存（独立临时库，单 owner，按 book_id 查）
     let row: (String,) =
-        sqlx::query_as("SELECT data_json FROM exports WHERE book_id = 'B1'")
+        sqlx::query_as("SELECT data_json FROM notes WHERE book_id = 'B1'")
             .fetch_one(&t.state.pool)
             .await
             .unwrap();
@@ -583,9 +583,9 @@ async fn export_single_book_persists_raw_json() {
 }
 
 #[tokio::test]
-async fn export_all_books_and_skip_cached_on_second_run() {
+async fn save_all_books_and_skip_cached_on_second_run() {
     let t = setup().await;
-    let (status, v) = create_export(&t, json!({})).await;
+    let (status, v) = create_save(&t, json!({})).await;
     assert_eq!(status, StatusCode::ACCEPTED);
     assert_eq!(v["progress"]["total_books"], json!(3));
     let task_id = v["task_id"].as_str().unwrap().to_string();
@@ -595,7 +595,7 @@ async fn export_all_books_and_skip_cached_on_second_run() {
     let resp = t
         .app
         .clone()
-        .oneshot(req("GET", &format!("/api/v1/exports/{task_id}")))
+        .oneshot(req("GET", &format!("/api/v1/saves/{task_id}")))
         .await
         .unwrap();
     let v = body_json(resp).await;
@@ -603,15 +603,15 @@ async fn export_all_books_and_skip_cached_on_second_run() {
 
     let bm_calls = t.gw.count("/book/bookmarklist");
 
-    // 第二次全量导出：全部命中已有 exports → 直接终态，不再回源
-    let (status, v) = create_export(&t, json!({})).await;
+    // 第二次全量保存：全部命中已有 notes → 直接终态，不再回源
+    let (status, v) = create_save(&t, json!({})).await;
     assert_eq!(status, StatusCode::OK); // 立即完成
     assert_eq!(v["status"], json!("completed"));
     assert_eq!(v["skipped_cached"], json!(3));
     assert_eq!(t.gw.count("/book/bookmarklist"), bm_calls);
 
     // refresh=true 才会重抓
-    let (status, v) = create_export(&t, json!({"refresh": true})).await;
+    let (status, v) = create_save(&t, json!({"refresh": true})).await;
     assert_eq!(status, StatusCode::ACCEPTED);
     assert_eq!(v["queued_books"], json!(3));
     drain_worker(&t).await;
@@ -635,7 +635,7 @@ async fn partial_when_one_book_fails_permanently() {
     )
     .await;
 
-    let (status, v) = create_export(&t, json!({})).await;
+    let (status, v) = create_save(&t, json!({})).await;
     assert_eq!(status, StatusCode::ACCEPTED);
     let task_id = v["task_id"].as_str().unwrap().to_string();
 
@@ -644,7 +644,7 @@ async fn partial_when_one_book_fails_permanently() {
     let resp = t
         .app
         .clone()
-        .oneshot(req("GET", &format!("/api/v1/exports/{task_id}")))
+        .oneshot(req("GET", &format!("/api/v1/saves/{task_id}")))
         .await
         .unwrap();
     let v = body_json(resp).await;
@@ -657,7 +657,7 @@ async fn partial_when_one_book_fails_permanently() {
     let resp = t
         .app
         .clone()
-        .oneshot(req("GET", &format!("/api/v1/exports/{task_id}/result")))
+        .oneshot(req("GET", &format!("/api/v1/saves/{task_id}/result")))
         .await
         .unwrap();
     let v = body_json(resp).await;
@@ -685,7 +685,7 @@ async fn transient_error_backs_off_then_succeeds() {
     )
     .await;
 
-    let (_, v) = create_export(&t, json!({"book_ids": ["B1"]})).await;
+    let (_, v) = create_save(&t, json!({"book_ids": ["B1"]})).await;
     let task_id = v["task_id"].as_str().unwrap().to_string();
 
     // 第一轮：瞬时失败 → 退避（next_sync_ms 在未来，pick 不到）
@@ -693,7 +693,7 @@ async fn transient_error_backs_off_then_succeeds() {
     let resp = t
         .app
         .clone()
-        .oneshot(req("GET", &format!("/api/v1/exports/{task_id}")))
+        .oneshot(req("GET", &format!("/api/v1/saves/{task_id}")))
         .await
         .unwrap();
     let v = body_json(resp).await;
@@ -701,7 +701,7 @@ async fn transient_error_backs_off_then_succeeds() {
     assert_eq!(*attempts.lock().unwrap(), 1);
 
     // 模拟退避到期
-    sqlx::query("UPDATE export_items SET next_sync_ms = 0")
+    sqlx::query("UPDATE task_items SET next_sync_ms = 0")
         .execute(&t.state.pool)
         .await
         .unwrap();
@@ -710,7 +710,7 @@ async fn transient_error_backs_off_then_succeeds() {
     let resp = t
         .app
         .clone()
-        .oneshot(req("GET", &format!("/api/v1/exports/{task_id}")))
+        .oneshot(req("GET", &format!("/api/v1/saves/{task_id}")))
         .await
         .unwrap();
     let v = body_json(resp).await;
@@ -721,24 +721,24 @@ async fn transient_error_backs_off_then_succeeds() {
 #[tokio::test]
 async fn wait_timeout_returns_terminal_when_all_skipped() {
     let t = setup().await;
-    // 先导出一本书
-    let _ = create_export(&t, json!({"book_ids": ["B1"]})).await;
+    // 先保存一本书
+    let _ = create_save(&t, json!({"book_ids": ["B1"]})).await;
     drain_worker(&t).await;
 
-    // 再次导出同书：全部命中已有 exports，wait_timeout 内立即终态 → 200
-    let (status, v) = create_export(&t, json!({"book_ids": ["B1"], "wait_timeout": 5})).await;
+    // 再次保存同书：全部命中已有 notes，wait_timeout 内立即终态 → 200
+    let (status, v) = create_save(&t, json!({"book_ids": ["B1"], "wait_timeout": 5})).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(v["status"], json!("completed"));
 }
 
 #[tokio::test]
-async fn task_list_and_delete_keeps_exports() {
+async fn task_list_and_delete_keeps_saved_notes() {
     let t = setup().await;
-    let (_, v1) = create_export(&t, json!({"book_ids": ["B1"]})).await;
-    let (_, v2) = create_export(&t, json!({"book_ids": ["B2"]})).await;
+    let (_, v1) = create_save(&t, json!({"book_ids": ["B1"]})).await;
+    let (_, v2) = create_save(&t, json!({"book_ids": ["B2"]})).await;
     drain_worker(&t).await;
 
-    let resp = t.app.clone().oneshot(req("GET", "/api/v1/exports?limit=10")).await.unwrap();
+    let resp = t.app.clone().oneshot(req("GET", "/api/v1/saves?limit=10")).await.unwrap();
     let v = body_json(resp).await;
     assert_eq!(v["tasks"].as_array().unwrap().len(), 2);
 
@@ -746,7 +746,7 @@ async fn task_list_and_delete_keeps_exports() {
     let resp = t
         .app
         .clone()
-        .oneshot(req("DELETE", &format!("/api/v1/exports/{id1}")))
+        .oneshot(req("DELETE", &format!("/api/v1/saves/{id1}")))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
@@ -755,13 +755,13 @@ async fn task_list_and_delete_keeps_exports() {
     let resp = t
         .app
         .clone()
-        .oneshot(req("GET", &format!("/api/v1/exports/{id1}")))
+        .oneshot(req("GET", &format!("/api/v1/saves/{id1}")))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-    // 产物保留：exports 表数据仍在
-    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM exports WHERE book_id = 'B1'")
+    // 数据保留：notes 表仍在
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes WHERE book_id = 'B1'")
         .fetch_one(&t.state.pool)
         .await
         .unwrap();
@@ -773,12 +773,12 @@ async fn task_list_and_delete_keeps_exports() {
 #[tokio::test]
 async fn result_before_finish_is_409() {
     let t = setup().await;
-    let (_, v) = create_export(&t, json!({"book_ids": ["B1"]})).await;
+    let (_, v) = create_save(&t, json!({"book_ids": ["B1"]})).await;
     let task_id = v["task_id"].as_str().unwrap().to_string();
     let resp = t
         .app
         .clone()
-        .oneshot(req("GET", &format!("/api/v1/exports/{task_id}/result")))
+        .oneshot(req("GET", &format!("/api/v1/saves/{task_id}/result")))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CONFLICT);
@@ -789,7 +789,7 @@ async fn result_before_finish_is_409() {
 #[tokio::test]
 async fn sse_emits_done_for_terminal_task() {
     let t = setup().await;
-    let (_, v) = create_export(&t, json!({"book_ids": ["B1"]})).await;
+    let (_, v) = create_save(&t, json!({"book_ids": ["B1"]})).await;
     let task_id = v["task_id"].as_str().unwrap().to_string();
     drain_worker(&t).await;
 
@@ -797,7 +797,7 @@ async fn sse_emits_done_for_terminal_task() {
     let resp = t
         .app
         .clone()
-        .oneshot(req("GET", &format!("/api/v1/exports/{task_id}/events")))
+        .oneshot(req("GET", &format!("/api/v1/saves/{task_id}/events")))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -813,7 +813,7 @@ async fn unknown_task_404() {
     let resp = t
         .app
         .clone()
-        .oneshot(req("GET", "/api/v1/exports/wexp_nonexistent"))
+        .oneshot(req("GET", "/api/v1/saves/wexp_nonexistent"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -826,7 +826,7 @@ async fn unknown_task_404() {
 #[tokio::test]
 async fn empty_book_ids_array_rejected() {
     let t = setup().await;
-    let (status, v) = create_export(&t, json!({"book_ids": []})).await;
+    let (status, v) = create_save(&t, json!({"book_ids": []})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(v["error"]["code"], json!("INVALID_ARGUMENT"));
 }

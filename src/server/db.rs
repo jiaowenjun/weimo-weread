@@ -1,8 +1,8 @@
 //! SQLite 连接与建表（内嵌 bootstrap SQL，不用 sqlx migrate）。
 //!
 //! BYOK 模型下存储按 Key 指纹（owner 列 / cache key 前缀）隔离，不同 Key
-//! 的缓存与导出产物互不混淆。表分两类：cache_entries 可再生（代理缓存）；
-//! books/exports 是长期资产（exports 存笔记原始 JSON），tasks/export_items 是任务调度状态。
+//! 的缓存与已保存笔记互不混淆。表分两类：cache_entries 可再生（代理缓存）；
+//! books/notes 是长期资产（notes 存笔记原始 JSON），tasks/task_items 是任务调度状态。
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   expires_ms   INTEGER
 );
 
-CREATE TABLE IF NOT EXISTS export_items (
+CREATE TABLE IF NOT EXISTS task_items (
   task_id      TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
   book_id      TEXT NOT NULL,
   state        TEXT NOT NULL DEFAULT 'waiting',
@@ -59,18 +59,18 @@ CREATE TABLE IF NOT EXISTS export_items (
   PRIMARY KEY (task_id, book_id)
 );
 
-CREATE TABLE IF NOT EXISTS exports (
+CREATE TABLE IF NOT EXISTS notes (
   owner       TEXT NOT NULL,
   book_id     TEXT NOT NULL,
   data_json   TEXT NOT NULL,
   bookmarks   INTEGER NOT NULL DEFAULT 0,
   reviews     INTEGER NOT NULL DEFAULT 0,
-  exported_ms INTEGER NOT NULL,
+  saved_ms    INTEGER NOT NULL,
   PRIMARY KEY (owner, book_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_export_items_due ON export_items(state, next_sync_ms);
-CREATE INDEX IF NOT EXISTS idx_exports_time ON exports(exported_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_task_items_due ON task_items(state, next_sync_ms);
+CREATE INDEX IF NOT EXISTS idx_notes_time ON notes(saved_ms DESC);
 "#;
 
 pub async fn connect(db_path: &std::path::Path) -> Result<SqlitePool> {
@@ -85,11 +85,20 @@ pub async fn connect(db_path: &std::path::Path) -> Result<SqlitePool> {
         .with_context(|| format!("连接数据库失败: {}", db_path.display()))?;
 
     // 旧版库整体重建（产物可再生，重新抓取即可）：
-    // - v0.1 单用户 schema：exports 无 owner / tasks 无 api_key
-    // - v0.2 markdown 时代：exports 含 markdown/book_json 列，无法无损转为原始 JSON
+    // - v0.1 单用户 schema：exports 表无 owner / tasks 无 api_key
+    // - v0.2 markdown 时代：exports 含 markdown/book_json 列
+    // - v0.3 导出命名时代：表名还是 exports / export_items
     if needs_rebuild(&pool).await? {
-        tracing::warn!("检测到旧版库，重建表结构（缓存/导出数据将重新生成）");
-        for table in ["exports", "books", "export_items", "tasks", "cache_entries"] {
+        tracing::warn!("检测到旧版库，重建表结构（缓存/已保存笔记将重新生成）");
+        for table in [
+            "notes",
+            "task_items",
+            "tasks",
+            "books",
+            "cache_entries",
+            "exports",
+            "export_items",
+        ] {
             sqlx::query(&format!("DROP TABLE IF EXISTS {table}"))
                 .execute(&pool)
                 .await
@@ -111,18 +120,21 @@ pub async fn connect(db_path: &std::path::Path) -> Result<SqlitePool> {
 }
 
 async fn needs_rebuild(pool: &SqlitePool) -> Result<bool> {
-    let exports_cols: Vec<String> =
-        sqlx::query_scalar("SELECT name FROM pragma_table_info('exports')")
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default();
+    // sqlite_master 查旧表名（v0.1~v0.3），pragma 查 v0.1 单用户列缺失
+    let legacy: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
+            AND name IN ('exports', 'export_items')",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    if legacy > 0 {
+        return Ok(true);
+    }
     let tasks_cols: Vec<String> =
         sqlx::query_scalar("SELECT name FROM pragma_table_info('tasks')")
             .fetch_all(pool)
             .await
             .unwrap_or_default();
-    // 空表列表 = 全新库；含 markdown 列 = v0.2 产物库；缺 owner/api_key = v0.1 单用户库
-    Ok(exports_cols.iter().any(|c| c == "markdown" || c == "book_json")
-        || (!exports_cols.is_empty() && !exports_cols.iter().any(|c| c == "owner"))
-        || (!tasks_cols.is_empty() && !tasks_cols.iter().any(|c| c == "api_key")))
+    Ok(!tasks_cols.is_empty() && !tasks_cols.iter().any(|c| c == "api_key"))
 }

@@ -95,32 +95,32 @@ export const api = {
     return request<CachedEnvelope<ReadData>>(`/readdata?${qs.toString()}`);
   },
 
-  // ---- 导出任务 ----
+  // ---- 保存任务 ----
   listTasks: (query: { status?: string; limit?: number; cursor?: number }) => {
     const qs = new URLSearchParams();
     if (query.status) qs.set('status', query.status);
     qs.set('limit', String(query.limit ?? 100));
     if (query.cursor != null) qs.set('cursor', String(query.cursor));
-    return request<TaskListResponse>(`/exports?${qs.toString()}`);
+    return request<TaskListResponse>(`/saves?${qs.toString()}`);
   },
 
-  getTask: (taskId: string) => request<TaskView>(`/exports/${taskId}`),
+  getTask: (taskId: string) => request<TaskView>(`/saves/${taskId}`),
 
   /** SSE 订阅地址（EventSource 无法设置 Header，Key 经 ?key= 查询参数传递） */
   taskEventsUrl: (taskId: string) => {
     const key = getWereadKey();
     const q = key ? `?key=${encodeURIComponent(key)}` : '';
-    return `${getApiBase()}/exports/${encodeURIComponent(taskId)}/events${q}`;
+    return `${getApiBase()}/saves/${encodeURIComponent(taskId)}/events${q}`;
   },
 
   createTask: (body: { book_ids?: string[] | null; refresh?: boolean; wait_timeout?: number }) =>
-    request<CreateTaskResponse>('/exports', {
+    request<CreateTaskResponse>('/saves', {
       method: 'POST',
       body: JSON.stringify(body),
     }),
 
   deleteTask: (taskId: string) =>
-    request<void>(`/exports/${taskId}`, { method: 'DELETE' }),
+    request<void>(`/saves/${taskId}`, { method: 'DELETE' }),
 
-  getResult: (taskId: string) => request<ResultView>(`/exports/${taskId}/result`),
+  getResult: (taskId: string) => request<ResultView>(`/saves/${taskId}/result`),
 };

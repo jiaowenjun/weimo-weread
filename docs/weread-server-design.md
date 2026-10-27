@@ -31,24 +31,24 @@
 
 ## 0. 目标与约束——与 douban-api 的关键差异
 
-把现有 CLI（`weread-notes`）的能力服务化：**通过官方 Agent Gateway 代理/导出本人微信读书数据（书架、笔记、统计），并提供管理前端**。
+把现有 CLI（`weread-notes`）的能力服务化：**通过官方 Agent Gateway 代理本人微信读书数据并保存笔记（书架、笔记、统计），并提供管理前端**。
 
 douban-api 的架构是围绕「慢速 HTML 爬虫」设计的；weread 的上游是**官方 JSON API**，问题域不同，**不能照抄，要按差异重新推导**：
 
 | 维度 | douban-api | weread-api | 对本设计的直接影响 |
 |---|---|---|---|
 | 上游 | 豆瓣公开页 HTML 抓取 | 官方 Agent Gateway（JSON，Bearer `wrk-` Key） | 无需 HTML 解析；错误是结构化 errcode |
-| 上游速度 | 全量 ≥1 分钟（20 页 × ≥2s 限速） | 单接口毫秒~秒级 | **大部分接口可同步代理**，只有全量导出需要异步任务 |
+| 上游速度 | 全量 ≥1 分钟（20 页 × ≥2s 限速） | 单接口毫秒~秒级 | **大部分接口可同步代理**，只有全量保存需要异步任务 |
 | 上游限速 | 豆瓣反爬，超速封 IP | 官方未公布限额，宽松但未知 | 节流从「生存前提」降级为「礼貌保守」 |
 | 认证 | 免登录（可选 Cookie） | 上游 Key = 本人身份 | **单用户服务**；无 uid 维度；两层凭据模型 |
 | 数据范围 | 任意公开用户 | 仅 Key 持有者本人 + 公开社区内容 | 缓存键不含 uid；无多租户 |
-| 数据形态 | 扁平 12 字段记录 | 嵌套 JSON（书/章节/划线/想法） | 持久化以「笔记原始 JSON（exports 表）+ 书籍元数据」为主 |
+| 数据形态 | 扁平 12 字段记录 | 嵌套 JSON（书/章节/划线/想法） | 持久化以「笔记原始 JSON（notes 表）+ 书籍元数据」为主 |
 | 写操作 | 无 | 无（官方网关全只读） | 同 douban，纯读服务 |
 
 三条硬约束：
 
 1. **API Key 必须只留在服务端**——前端/客户端永不接触上游 Key（它是本人全部阅读数据的钥匙）
-2. **全量导出天然是长操作**——N 本书 × 2~3 次网关调用（300 本 ≈ 千次调用，分钟级），必须异步任务化
+2. **全量保存天然是长操作**——N 本书 × 2~3 次网关调用（300 本 ≈ 千次调用，分钟级），必须异步任务化
 3. **官方网关限额未知**——所有上游调用必须经过单一节流点，可配置、可观察
 
 ## 1. 总体架构
@@ -56,17 +56,17 @@ douban-api 的架构是围绕「慢速 HTML 爬虫」设计的；weread 的上�
 ```
 浏览器(web/) ──HTTP──▶ API 层（axum）
                         │  /shelf /notebooks /readdata...  ──▶ TTL 缓存命中? ──▶ 直接返回
-                        │  /exports(POST)                  ──▶ 创建异步任务
+                        │  /saves(POST)                     ──▶ 创建异步任务
                         ▼
                   服务层 service
                         │  缓存未命中/refresh ──▶ GatewayClient(async, 全局节流)
                         ▼
                   微信读书 Agent Gateway (i.weread.qq.com, Bearer wrk-...)
                         
-                  导出 worker（单 worker 串行，DB 即队列，watch 唤醒）
-                        │  逐书: bookmarklist + review/list/mine 翻页 → 原始 JSON 入库(exports)
+                  保存 worker（单 worker 串行，DB 即队列，watch 唤醒）
+                        │  逐书: bookmarklist + review/list/mine 翻页 → 原始 JSON 入库(notes)
                         ▼
-                  SQLite: cache_entries / tasks / export_items / books / exports
+                  SQLite: cache_entries / tasks / task_items / books / notes
 ```
 
 组件职责（对照 douban-api）：
@@ -74,7 +74,7 @@ douban-api 的架构是围绕「慢速 HTML 爬虫」设计的；weread 的上�
 - **API 层**（routes.rs）：参数校验、双层鉴权、per-IP 限流、SSE
 - **服务层**（service.rs）：同步代理 + 缓存判定、任务 CRUD 与视图聚合
 - **GatewayClient**（gateway.rs，对应 douban 的 fetcher.rs）：async trait，隔离上游 HTTP；生产 reqwest 实现 + 测试 fake
-- **Worker**（worker.rs）：DB 即队列（export_items 表），单 worker 串行节流
+- **Worker**（worker.rs）：DB 即队列（task_items 表），单 worker 串行节流
 - **存储**（db.rs）：SQLite 单库——缓存表 + 任务表 + 长期数据表
 
 ## 2. 核心设计决策
@@ -86,23 +86,23 @@ douban-api 的架构是围绕「慢速 HTML 爬虫」设计的；weread 的上�
 **现实现**：前端必填微信读书 Key（手动输入，存浏览器 localStorage），逐请求经 `X-Weread-Key` 头（SSE/下载直链走 `?key=`）传给后端；**服务器不读取任何默认 Key**，启动零凭据。配套改造：
 
 - `GatewayRegistry` 按 Key 解析并缓存网关客户端；节流锁全局共享（跨所有 Key 恒低速）
-- 存储按 Key 指纹（sha256 前 8 hex）隔离：cache key 前缀、books/exports 复合主键 (owner, book_id)
+- 存储按 Key 指纹（sha256 前 8 hex）隔离：cache key 前缀、books/notes 复合主键 (owner, book_id)
 - tasks 表存原始 Key（本地个人工具可接受）供 worker 续跑；任务查询/删除按 Key 过滤
 - 单用户假设弱化为「同时可能多 Key」——数据隔离已处理，限流/熔断仍全局
 
-### D2：混合模型——同步代理 + 异步导出（本方案与 douban 最大的分野）
+### D2：混合模型——同步代理 + 异步保存（本方案与 douban 最大的分野）
 
 - **同步代理**：书架、笔记本概览、书籍详情/目录/进度、阅读统计、单书笔记、搜索——这些上游单调用（或 2~3 次）秒级返回的接口，直接同步 GET + SQLite TTL 缓存（`?refresh=true` 强制回源）。**不任务化**——douban 任务化的原因是豆瓣慢，这里没有这个约束
-- **异步保存**：只有「批量保存多本书的笔记原始 JSON」走任务模型（POST /exports → 202 → 轮询/SSE）。单书保存 = 单书任务 + `wait_timeout` 同步逃生门（douban 已验证的模式），前端「保存此书」按钮秒级拿到结果
+- **异步保存**：只有「批量保存多本书的笔记原始 JSON」走任务模型（POST /saves → 202 → 轮询/SSE）。单书保存 = 单书任务 + `wait_timeout` 同步逃生门（douban 已验证的模式），前端「保存此书」按钮秒级拿到结果
 - 理由：任务模型的全套基础设施（队列、worker、状态机、SSE）只为长操作支付；短操作走代理保持 API 简单直接
 
 ### D3：持久化双轨——缓存（可再生）vs 已保存笔记（长期）
 
 - `cache_entries`：代理响应的原样 JSON，TTL 过期即失效，可随时清空重建，**不是资产**
-- `exports`：保存任务的产物（**笔记原始 JSON**：书/章节/划线/想法 + 计数），长期保留、脱网可用，**是资产**
+- `notes`：保存任务的产物（**笔记原始 JSON**：书/章节/划线/想法 + 计数），长期保留、脱网可用，**是资产**
 - `books`：shelf/notebooks 代理调用时顺手 upsert 的书籍元数据汇总（跨两个数据源的联查视图），全量保存时补全
-- 划线/想法的**正规化明细表 v1 不做**（见非目标）：单书笔记浏览走代理缓存，历史数据在 exports 表的原始 JSON
-- **2026-10-27 变更（按用户要求）**：移除 Markdown 渲染与下载端点（`GET /books/{id}/notes/markdown`）、CLI `export` 子命令；exports 表由 `markdown`/`book_json` 两列改为单列 `data_json` 存原始 JSON（全 fidelity，无损）。旧库检测到 markdown 列即整体重建（产物可再生）
+- 划线/想法的**正规化明细表 v1 不做**（见非目标）：单书笔记浏览走代理缓存，历史数据在 notes 表的原始 JSON
+- **2026-10-27 变更（按用户要求）**：移除 Markdown 渲染与下载端点（`GET /books/{id}/notes/markdown`）、CLI `export` 子命令；exports 表由 `markdown`/`book_json` 两列改为单列 `data_json` 存原始 JSON（全 fidelity，无损）。旧库检测到旧表名/markdown 列即整体重建（产物可再生）。同日二次变更：`exports`/`export_items` 表更名为 `notes`/`task_items`，API `/exports` → `/saves`，UI「导出」统一为「保存」
 
 ### D4：client 全面 async 化 + trait 化
 
@@ -113,7 +113,7 @@ douban-api 的架构是围绕「慢速 HTML 爬虫」设计的；weread 的上�
 
 ### D5：简化版 worker——保留骨架，去掉爬虫特有的重型机制
 
-照搬 douban 验证过的骨架：**DB 即队列**（export_items 表 = 队列单位）、单 worker 串行（天然全局节流）、watch channel 即时唤醒 + 60s 兜底扫描、broadcast 通道驱动 SSE。
+照搬 douban 验证过的骨架：**DB 即队列**（task_items 表 = 队列单位）、单 worker 串行（天然全局节流）、watch channel 即时唤醒 + 60s 兜底扫描、broadcast 通道驱动 SSE。
 
 按 weread 实情裁剪：
 
@@ -146,12 +146,12 @@ Base URL：`http://{host}:8081/api/v1`（默认端口 8081，避免与 douban �
 | 8 | GET | `/search?keyword=&scope=&count=` | `/store/search` | 不缓存 | 书城搜索（免登录接口） |
 | 9 | GET | `/gateway/apis` | `/_list` | TTL 24h | 网关接口自描述 |
 | 10 | POST | `/gateway/call` | 任意 api_name | 不缓存 | 逃生门：透传任意网关调用 |
-| 11 | POST | `/exports` | — | — | 创建保存任务（核心入口） |
-| 12 | GET | `/exports/{task_id}` | — | — | 任务状态与进度 |
-| 13 | GET | `/exports` | — | — | 任务列表 |
-| 14 | DELETE | `/exports/{task_id}` | — | — | 删除任务（产物保留） |
-| 15 | GET | `/exports/{task_id}/result` | — | — | 结果汇总 |
-| 16 | GET | `/exports/{task_id}/events` | — | — | 进度 SSE 推流 |
+| 11 | POST | `/saves` | — | — | 创建保存任务（核心入口） |
+| 12 | GET | `/saves/{task_id}` | — | — | 任务状态与进度 |
+| 13 | GET | `/saves` | — | — | 任务列表 |
+| 14 | DELETE | `/saves/{task_id}` | — | — | 删除任务（数据保留） |
+| 15 | GET | `/saves/{task_id}/result` | — | — | 结果汇总 |
+| 16 | GET | `/saves/{task_id}/events` | — | — | 进度 SSE 推流 |
 | 17 | GET | `/server/info` | — | — | 服务元信息（含网关连通性/升级提示） |
 | 18 | GET | `/healthz` | — | — | 健康检查（前缀外，不鉴权） |
 
@@ -179,7 +179,7 @@ Base URL：`http://{host}:8081/api/v1`（默认端口 8081，避免与 douban �
 ### 4.2 创建保存任务
 
 ```
-POST /api/v1/exports
+POST /api/v1/saves
 { "book_ids": ["3300028061"], "refresh": false, "wait_timeout": 0 }
 ```
 
@@ -198,7 +198,7 @@ POST /api/v1/exports
   "total_books": 128,
   "skipped_cached": 120,
   "created_at": "2026-10-27T10:00:00+08:00",
-  "url": "/api/v1/exports/wexp_..."
+  "url": "/api/v1/saves/wexp_..."
 }
 ```
 
@@ -207,7 +207,7 @@ POST /api/v1/exports
 ### 4.3 查询任务 / SSE / 结果
 
 ```json
-GET /api/v1/exports/{task_id}
+GET /api/v1/saves/{task_id}
 {
   "task_id": "wexp_...",
   "status": "running",
@@ -216,11 +216,11 @@ GET /api/v1/exports/{task_id}
   "items_count": 5230,
   "error": null,
   "created_at": "...", "started_at": "...", "finished_at": null,
-  "result_url": "/api/v1/exports/wexp_.../result"
+  "result_url": "/api/v1/saves/wexp_.../result"
 }
 ```
 
-- SSE（`/events`）与任务列表/删除语义与 douban 完全一致：先推快照、仅变更推送、`?key=` 兜底鉴权、15s 心跳；删除任务不删 exports 数据
+- SSE（`/events`）与任务列表/删除语义与 douban 完全一致：先推快照、仅变更推送、`?key=` 兜底鉴权、15s 心跳；删除任务不删 notes 数据
 - `/result` 返回汇总：
 
 ```json
@@ -254,7 +254,7 @@ CREATE TABLE books (
   updated_ms INTEGER NOT NULL
 );
 
--- 导出任务
+-- 保存任务
 CREATE TABLE tasks (
   task_id     TEXT PRIMARY KEY,   -- wexp_ + 时间有序随机后缀
   request_json TEXT NOT NULL,
@@ -265,8 +265,8 @@ CREATE TABLE tasks (
   expires_ms INTEGER                            -- 任务记录保留 30d（产物不删）
 );
 
--- 导出队列单位 = 书（DB 即队列；state 为队列状态机）
-CREATE TABLE export_items (
+-- 保存队列单位 = 书（DB 即队列；state 为队列状态机）
+CREATE TABLE task_items (
   task_id    TEXT NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
   book_id    TEXT NOT NULL,
   state      TEXT NOT NULL DEFAULT 'waiting',   -- waiting/running/done/skipped/error
@@ -277,16 +277,16 @@ CREATE TABLE export_items (
   updated_ms INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (task_id, book_id)
 );
-CREATE INDEX idx_export_items_due ON export_items(state, next_sync_ms);
+CREATE INDEX idx_task_items_due ON task_items(state, next_sync_ms);
 
 -- 已保存笔记（长期资产；BYOK 后复合主键 (owner, book_id)，owner = Key 指纹）
-CREATE TABLE exports (
+CREATE TABLE notes (
   owner       TEXT NOT NULL,
   book_id     TEXT NOT NULL,
   data_json   TEXT NOT NULL,        -- 笔记原始 JSON: {book, chapters, bookmarks, reviews}
   bookmarks   INTEGER NOT NULL DEFAULT 0,
   reviews     INTEGER NOT NULL DEFAULT 0,
-  exported_ms INTEGER NOT NULL,
+  saved_ms    INTEGER NOT NULL,
   PRIMARY KEY (owner, book_id)
 );
 ```
@@ -294,7 +294,7 @@ CREATE TABLE exports (
 ## 6. 任务状态机
 
 ```
-POST /exports ──▶ queued ──(全部书命中缓存)──▶ completed
+POST /saves ──▶ queued ──(全部书命中缓存)──▶ completed
                     │ worker 取出
                     ▼
                  running ──全部书 done/skipped──▶ completed
@@ -302,14 +302,14 @@ POST /exports ──▶ queued ──(全部书命中缓存)──▶ completed
                     │  全部书 error ───────────▶ failed
 ```
 
-书级（export_items.state）：`waiting → running → done | skipped(缓存命中) | error`（attempts 超限或 permanent 错误）。书级重试：transient 错误退避重试（20s×n + 抖动，上限 3 次尝试），超限标记 error 不阻塞其他书。
+书级（task_items.state）：`waiting → running → done | skipped(缓存命中) | error`（attempts 超限或 permanent 错误）。书级重试：transient 错误退避重试（20s×n + 抖动，上限 3 次尝试），超限标记 error 不阻塞其他书。
 
 ## 7. 缓存与数据保留
 
 | 项 | 默认 | 说明 |
 |---|---|---|
 | 代理缓存 TTL | 3600s（1h） | 网关回源便宜，TTL 比 douban 的 24h 短；`/gateway/apis` 单独 24h；搜索不缓存 |
-| 导出产物 | 永久 | exports 表不随任务过期清理；`refresh` 或带 `refresh:true` 重导时整书重写 |
+| 已保存笔记 | 永久 | notes 表不随任务过期清理；`refresh` 或带 `refresh:true` 重抓时整书重写 |
 | 任务记录 | 30 天 | 后台清理循环（douban 的 run_cleanup_loop 照搬） |
 | 失败不缓存 | — | 上游错误不写 cache_entries，下次请求直接重试 |
 
@@ -343,7 +343,7 @@ POST /exports ──▶ queued ──(全部书命中缓存)──▶ completed
 
 - **凭据 = 微信读书 API Key 本身**：所有 `/api/v1` 端点要求 `X-Weread-Key` 头或 `?key=` 参数（EventSource / 下载直链兜底）；缺失 401，响应体附获取页面引导
 - **服务器零默认凭据**：不读任何环境变量 Key，启动无需配置；Key 只活在请求与浏览器 localStorage
-- tasks 表存原始 Key 供 worker 异步续跑（本地 SQLite，与 `~/.zshrc` 同信任域）；cache/books/exports 只存指纹
+- tasks 表存原始 Key 供 worker 异步续跑（本地 SQLite，与 `~/.zshrc` 同信任域）；cache/books/notes 只存指纹
 - Key 有效性不做事前校验——首次网关调用时由官方网关判定（errcode -2013 映射 502）
 - `POST /gateway/call` 逃生门透传任意只读调用；公网部署需自行评估（任何人都能用自己的 Key 使用本服务）
 - CORS：默认关闭，`WEREAD_SERVER_CORS_ORIGINS` 配置
@@ -364,9 +364,9 @@ POST /exports ──▶ queued ──(全部书命中缓存)──▶ completed
 3. **笔记** `/notes`
    - 左：笔记本列表（书名、划线/笔记/想法计数、最近更新，倒序）
    - 右（选中书）：按章节分组的划线与想法时间线（引用块样式区分划线/想法）
-   - 「保存此书」按钮 → POST /exports（wait_timeout=30）→ 完成后行内提示（原始 JSON 落库）
-   - 「全量导出」按钮 → 跳转导出页创建任务
-4. **导出任务** `/exports`
+   - 「保存此书」按钮 → POST /saves（wait_timeout=30）→ 完成后行内提示（原始 JSON 落库）
+   - 「全部保存」按钮 → 跳转保存任务页创建任务
+4. **保存任务** `/saves`
    - 任务列表（状态 tag、进度条、书数/划线数、时间）；创建任务弹窗（全部/指定书、refresh 开关）
    - 任务详情抽屉：SSE 实时进度（douban TaskDetailDrawer 同款模式）、每本书状态列表
 5. 顶栏「连接」设置（apiBase + token，照抄 douban）
@@ -388,7 +388,7 @@ weread-api/
 │   │   ├── db.rs           # SQLite bootstrap（内嵌 SQL，不用 sqlx migrate）
 │   │   ├── state.rs        # AppState：wakeup watch / progress broadcast / 熔断 / 限流
 │   │   ├── service.rs      # 代理缓存、任务 CRUD、视图聚合、清理循环
-│   │   ├── worker.rs       # 导出 worker（泛型 F: GatewayApi）
+│   │   ├── worker.rs       # 保存 worker（泛型 F: GatewayApi）
 │   │   └── routes.rs       # axum 路由 + 中间件 + SSE
 │   └── bin/
 │       └── weread-notes.rs # 现 main.rs 移入，#[tokio::main]，命令不变
@@ -407,7 +407,7 @@ douban 同款——全进程内，无 testcontainer：
 - `FakeGateway`：按 api_name 返回构造 JSON（notebooks 两页、bookmarklist 含 chapters、review 翻页、errcode 错误、超时），并**计数调用次数**（验证缓存命中与节流）
 - oneshot 打 router + tempdir SQLite：
   - 代理端点：首次回源、TTL 内命中缓存（fake 计数不变）、refresh 强制回源
-  - 任务：多书 partial/failed 状态机、缓存命中跳过（skipped_cached）、wait_timeout 同步返回、原始 JSON 落库（直查 exports 表）
+  - 任务：多书 partial/failed 状态机、缓存命中跳过（skipped_cached）、wait_timeout 同步返回、原始 JSON 落库（直查 notes 表）
   - SSE：快照 + 终态 done
   - 鉴权/限流中间件
 - CLI 回归：改造后三个子命令行为不变
@@ -427,14 +427,14 @@ douban 同款——全进程内，无 testcontainer：
 |---|---|---|
 | 1 | client async 化 + GatewayError thiserror 化 + lib 重组（fetch.rs 提出）+ CLI 迁移 | CLI 四命令回归（真实 Key 冒烟） |
 | 2 | server 骨架：config/db/error/state/routes + 同步代理端点（缓存）+ 测试 | cargo test + curl 冒烟 |
-| 3 | 导出任务：service/worker + SSE + 原始 JSON 入库 + 测试 | 单书导出 + 全量导出（真 Key） |
+| 3 | 保存任务：service/worker + SSE + 原始 JSON 入库 + 测试 | 单书保存 + 全量保存（真 Key） |
 | 4 | web 前端四页面 | pnpm dev 联调 |
 | 5 | README 更新 + 设计文档状态改「已实现」 | — |
 
 ## 16. 开放问题（实施前拍板）
 
-1. **网关真实限额**：500ms 间隔是拍脑袋的保守值——实施后用一个真实 Key 做一次全量导出观察是否有 errcode 限流反馈，再校准默认值
-2. **`/books/{id}/notes` 是否顺手入库**：当前设计「浏览走缓存、导出才入库」边界清晰；若实际使用中发现离线浏览需求强，可改为浏览也 upsert exports（成本低）
+1. **网关真实限额**：500ms 间隔是拍脑袋的保守值——实施后用一个真实 Key 做一次全量保存观察是否有 errcode 限流反馈，再校准默认值
+2. **`/books/{id}/notes` 是否顺手入库**：当前设计「浏览走缓存、保存才入库」边界清晰；若实际使用中发现离线浏览需求强，可改为浏览也 upsert notes（成本低）
 3. **search 要不要缓存**：当前不缓存；若发现前端搜索框高频重复查询可加 5min 短缓存
 4. **gateway/call 的 api_name 白名单**：当前全放开（网关本身只读）；若公网部署担心被当作免费代理，可收敛为白名单枚举
 
@@ -443,7 +443,7 @@ douban 同款——全进程内，无 testcontainer：
 ## 附：实施备忘（与设计稿的偏差/细化）
 
 1. **缓存降级（超出设计稿）**：代理端点回源失败但存在旧缓存时，返回过期数据并置 `fresh=false`，而非直接报错——单用户场景下可用性优先；设计稿第 7 节「失败不缓存」仍成立（不写缓存表）
-2. **exports 跳过判定（开放问题 2 的落地）**：导出产物是长期资产、无 TTL，「已导出即跳过」，`refresh:true` 才重抓覆盖；单书笔记浏览继续走代理缓存，两者边界保持清晰
+2. **notes 跳过判定（开放问题 2 的落地）**：已保存笔记是长期资产、无 TTL，「已保存即跳过」，`refresh:true` 才重抓覆盖；单书笔记浏览继续走代理缓存，两者边界保持清晰
 3. **worker 队列包含 `running` 项**：进程重启后中断的书直接重试（单书 2~3 次调用，重抓成本低于断点机制的复杂度）
 4. **`?download=true`**（非 1）：serde_urlencoded 的 bool 反序列化只接受 true/false
 5. **upgrade 识别层级**：`upgrade_info` 判定在真实 client 的 `parse_response` 里，FakeGateway 绕过协议层——集成测试直接以 `GatewayError::Upgrade` 模拟 client 已识别出的阻断

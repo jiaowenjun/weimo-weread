@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { App as AntApp, Button, Card, Col, Empty, Input, List, Row, Spin, Tag, Tooltip, theme } from 'antd';
-import { ExportOutlined, ReloadOutlined } from '@ant-design/icons';
+import { ReloadOutlined, SaveOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
 import dayjs from 'dayjs';
 import type { BookNotesData, CachedEnvelope, NotebooksData } from '../types';
@@ -14,13 +14,13 @@ function fmtTs(v: unknown): string {
 }
 
 /** 单书笔记面板：按章节分组渲染划线 + 我的想法，可一键保存到服务端 */
-function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: () => void }) {
+function BookNotesPanel({ bookId, onSaved }: { bookId: string; onSaved?: () => void }) {
   const { message } = AntApp.useApp();
   const { token } = theme.useToken();
   const [envelope, setEnvelope] = useState<CachedEnvelope<BookNotesData> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [exporting, setExporting] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const load = useCallback(
     async (refresh = false) => {
@@ -66,20 +66,20 @@ function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: (
       }));
   }, [notes]);
 
-  const exportBook = async () => {
-    setExporting(true);
+  const saveBook = async () => {
+    setSaving(true);
     try {
       const res = await api.createTask({ book_ids: [bookId], wait_timeout: 30 });
       if (['completed', 'partial'].includes(res.status)) {
         message.success(`已保存《${title}》到服务端（${res.items_count} 条）`);
-        onExported?.();
+        onSaved?.();
       } else {
-        message.info('保存仍在进行，请到「导出任务」页查看进度');
+        message.info('保存仍在进行，请到「保存任务」页查看进度');
       }
     } catch (e) {
       message.error((e as Error).message);
     } finally {
-      setExporting(false);
+      setSaving(false);
     }
   };
 
@@ -93,7 +93,7 @@ function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: (
       }
       extra={
         <Tooltip title="笔记原始数据（书/章节/划线/想法）长期保存在服务端 SQLite">
-          <Button size="small" icon={<ExportOutlined />} loading={exporting} onClick={exportBook}>
+          <Button size="small" icon={<SaveOutlined />} loading={saving} onClick={saveBook}>
             保存此书
           </Button>
         </Tooltip>
@@ -213,8 +213,8 @@ export default function Notes() {
         <Button key="refresh" icon={<ReloadOutlined />} loading={loading} onClick={() => load(false)}>
           刷新
         </Button>,
-        <Button key="export-all" type="primary" onClick={() => navigate('/exports')}>
-          全量导出
+        <Button key="export-all" type="primary" onClick={() => navigate('/saves')}>
+          全部保存
         </Button>,
       ]}
     >

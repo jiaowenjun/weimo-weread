@@ -420,7 +420,7 @@ async fn create_save(
     )
     .await?;
 
-    // 有限同步等待：wait_timeout 内完成则返回终态（单书导出秒级完成）
+    // 有限同步等待：wait_timeout 内完成则返回终态（单书保存秒级完成）
     let mut view = outcome.view;
     if req.wait_timeout > 0 && !TERMINAL_STATUSES.contains(&view.status.as_str()) {
         let deadline =

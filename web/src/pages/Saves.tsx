@@ -6,7 +6,7 @@ import dayjs from 'dayjs';
 import type { TaskSummary } from '../types';
 import { api } from '../api';
 import { TASK_STATUS_META, TaskStatusTag } from '../labels';
-import CreateExportModal from '../components/CreateExportModal';
+import CreateSaveModal from '../components/CreateSaveModal';
 import TaskDetailDrawer from '../components/TaskDetailDrawer';
 
 const ACTIVE = ['queued', 'running'];
@@ -19,7 +19,7 @@ export default function Exports() {
   const { message } = AntApp.useApp();
   const [searchParams] = useSearchParams();
 
-  // 支持从概览跳转 /exports?task=xxx 直达详情
+  // 支持从概览跳转 /saves?task=xxx 直达详情
   useEffect(() => {
     const task = searchParams.get('task');
     if (task) setOpenTaskId(task);
@@ -80,7 +80,7 @@ export default function Exports() {
   ];
 
   return (
-    <PageContainer title="导出任务">
+    <PageContainer title="保存任务">
       <ProTable<TaskSummary>
         rowKey="task_id"
         actionRef={actionRef}
@@ -88,7 +88,7 @@ export default function Exports() {
         search={{ labelWidth: 'auto' }}
         polling={hasActive ? 2000 : undefined}
         options={{ reload: true, density: false, setting: false }}
-        locale={{ emptyText: '暂无任务，点击右上角「新建导出」创建' }}
+        locale={{ emptyText: '暂无任务，点击右上角「新建保存」创建' }}
         request={async (params) => {
           const pageSize = params.pageSize ?? 20;
           const need = (params.current ?? 1) * pageSize;
@@ -118,7 +118,7 @@ export default function Exports() {
           };
         }}
         toolBarRender={() => [
-          <CreateExportModal
+          <CreateSaveModal
             key="create"
             onCreated={(taskId) => {
               actionRef.current?.reload();

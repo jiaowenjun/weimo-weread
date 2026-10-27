@@ -1,4 +1,4 @@
-//! 导出 worker——DB 即队列，单 worker 串行。
+//! 保存 worker——DB 即队列，单 worker 串行。
 //!
 //! BYOK：每本书所属任务记录了创建者的 API Key，worker 经 AppState 的
 //! GatewayRegistry 按 Key 解析网关客户端；节流锁全局共享（跨所有 Key）。
@@ -58,12 +58,12 @@ pub async fn run_worker(state: AppState) {
     }
 }
 
-/// 处理一本到期书（导出 + 状态推进）。返回是否处理了；
+/// 处理一本到期书（抓取保存 + 状态推进）。返回是否处理了；
 /// 供 run_worker 循环与测试复用（测试可直接驱动而无需起后台 worker）。
 pub async fn process_next_due(state: &AppState) -> Result<bool> {
     match pick_due_item(&state.pool).await? {
         Some(item) => {
-            export_item(state, &item).await?;
+            save_item(state, &item).await?;
             Ok(true)
         }
         None => Ok(false),
@@ -74,7 +74,7 @@ async fn pick_due_item(pool: &SqlitePool) -> Result<Option<DueItem>> {
     // 含 running：进程重启后中断的书直接重试（重抓单书成本低，无需断点）
     let row = sqlx::query(
         "SELECT ei.task_id, ei.book_id, ei.attempts, t.api_key
-         FROM export_items ei JOIN tasks t ON t.task_id = ei.task_id
+         FROM task_items ei JOIN tasks t ON t.task_id = ei.task_id
          WHERE ei.state IN ('waiting','running')
            AND (ei.next_sync_ms IS NULL OR ei.next_sync_ms <= ?)
          ORDER BY ei.updated_ms ASC, ei.rowid ASC
@@ -83,7 +83,7 @@ async fn pick_due_item(pool: &SqlitePool) -> Result<Option<DueItem>> {
     .bind(ServerConfig::now_ms())
     .fetch_optional(pool)
     .await
-    .context("查询到期导出项失败")?;
+    .context("查询到期保存项失败")?;
 
     Ok(row.map(|r| DueItem {
         task_id: r.get("task_id"),
@@ -93,18 +93,18 @@ async fn pick_due_item(pool: &SqlitePool) -> Result<Option<DueItem>> {
     }))
 }
 
-async fn export_item(state: &AppState, item: &DueItem) -> Result<()> {
+async fn save_item(state: &AppState, item: &DueItem) -> Result<()> {
     let now = ServerConfig::now_ms();
 
     sqlx::query(
-        "UPDATE export_items SET state='running', updated_ms=? WHERE task_id=? AND book_id=?",
+        "UPDATE task_items SET state='running', updated_ms=? WHERE task_id=? AND book_id=?",
     )
     .bind(now)
     .bind(&item.task_id)
     .bind(&item.book_id)
     .execute(&state.pool)
     .await
-    .context("标记导出项 running 失败")?;
+    .context("标记保存项 running 失败")?;
 
     // 首次处理的书把任务置为 running
     sqlx::query(
@@ -125,7 +125,7 @@ async fn export_item(state: &AppState, item: &DueItem) -> Result<()> {
     };
 
     let outcome = match gateway.as_deref() {
-        Some(gw) => export_book_once(state, gw, &item.api_key, &item.book_id).await,
+        Some(gw) => save_book_once(state, gw, &item.api_key, &item.book_id).await,
         None => Err(GatewayError::Io("任务缺少有效的 API Key（旧版任务请重建）".into())),
     };
 
@@ -133,7 +133,7 @@ async fn export_item(state: &AppState, item: &DueItem) -> Result<()> {
         Ok((bookmarks, reviews)) => {
             state.record_crawl_success();
             sqlx::query(
-                "UPDATE export_items SET state='done', bookmarks=?, reviews=?,
+                "UPDATE task_items SET state='done', bookmarks=?, reviews=?,
                         attempts=attempts+1, next_sync_ms=NULL, error=NULL, updated_ms=?
                  WHERE task_id=? AND book_id=?",
             )
@@ -144,15 +144,15 @@ async fn export_item(state: &AppState, item: &DueItem) -> Result<()> {
             .bind(&item.book_id)
             .execute(&state.pool)
             .await
-            .context("标记导出项 done 失败")?;
+            .context("标记保存项 done 失败")?;
             info!(
                 task_id = %item.task_id,
                 book_id = %item.book_id,
                 bookmarks, reviews,
-                "书籍导出完成"
+                "书籍保存完成"
             );
         }
-        Err(e) => handle_export_error(state, item, e).await?,
+        Err(e) => handle_save_error(state, item, e).await?,
     }
 
     service::recompute_task_status(state, &item.task_id).await?;
@@ -160,8 +160,8 @@ async fn export_item(state: &AppState, item: &DueItem) -> Result<()> {
     Ok(())
 }
 
-/// 抓取单书笔记原始 JSON，写入 exports 表（按 Key 指纹隔离）。
-async fn export_book_once(
+/// 抓取单书笔记原始 JSON，写入 notes 表（按 Key 指纹隔离）。
+async fn save_book_once(
     state: &AppState,
     gw: &dyn GatewayApi,
     api_key: &str,
@@ -191,7 +191,7 @@ async fn export_book_once(
     let reviews = match fetch::fetch_my_reviews(gw, book_id).await {
         Ok(v) => v,
         Err(e) => {
-            warn!(error = %e, "想法列表获取失败，导出不含想法（与 CLI 行为一致）");
+            warn!(error = %e, "想法列表获取失败，保存不含想法（与 CLI 行为一致）");
             Vec::new()
         }
     };
@@ -209,11 +209,11 @@ async fn export_book_once(
 
     let now = ServerConfig::now_ms();
     sqlx::query(
-        "INSERT INTO exports (owner, book_id, data_json, bookmarks, reviews, exported_ms)
+        "INSERT INTO notes (owner, book_id, data_json, bookmarks, reviews, saved_ms)
          VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(owner, book_id) DO UPDATE SET
             data_json=excluded.data_json, bookmarks=excluded.bookmarks,
-            reviews=excluded.reviews, exported_ms=excluded.exported_ms",
+            reviews=excluded.reviews, saved_ms=excluded.saved_ms",
     )
     .bind(&owner)
     .bind(book_id)
@@ -223,7 +223,7 @@ async fn export_book_once(
     .bind(now)
     .execute(&state.pool)
     .await
-    .map_err(|e| GatewayError::Io(format!("写入 exports 表失败: {e}")))?;
+    .map_err(|e| GatewayError::Io(format!("写入 notes 表失败: {e}")))?;
 
     // best-effort 更新 books 表计数
     let _ = sqlx::query(
@@ -240,14 +240,14 @@ async fn export_book_once(
     Ok((bm_count, rv_count))
 }
 
-async fn handle_export_error(state: &AppState, item: &DueItem, e: GatewayError) -> Result<()> {
+async fn handle_save_error(state: &AppState, item: &DueItem, e: GatewayError) -> Result<()> {
     let now = ServerConfig::now_ms();
     warn!(
         task_id = %item.task_id,
         book_id = %item.book_id,
         attempt = item.attempts + 1,
         error = %e,
-        "书籍导出失败"
+        "书籍保存失败"
     );
 
     // 业务错误（无效 bookId 等）永久失败；其余按次数退避重试，超限终态失败
@@ -255,7 +255,7 @@ async fn handle_export_error(state: &AppState, item: &DueItem, e: GatewayError) 
     let over_limit = item.attempts + 1 >= MAX_ATTEMPTS;
     if permanent || over_limit {
         sqlx::query(
-            "UPDATE export_items SET state='error', attempts=?, next_sync_ms=NULL,
+            "UPDATE task_items SET state='error', attempts=?, next_sync_ms=NULL,
                     error=?, updated_ms=?
              WHERE task_id=? AND book_id=?",
         )
@@ -266,7 +266,7 @@ async fn handle_export_error(state: &AppState, item: &DueItem, e: GatewayError) 
         .bind(&item.book_id)
         .execute(&state.pool)
         .await
-        .context("标记导出项 error 失败")?;
+        .context("标记保存项 error 失败")?;
         if !permanent {
             state.record_crawl_failure();
         }
@@ -274,7 +274,7 @@ async fn handle_export_error(state: &AppState, item: &DueItem, e: GatewayError) 
         let tripped = state.record_crawl_failure();
         let backoff_ms = (item.attempts + 1) * 20_000 + rand::thread_rng().gen_range(0..5_000);
         sqlx::query(
-            "UPDATE export_items SET state='waiting', attempts=?, next_sync_ms=?, error=?, updated_ms=?
+            "UPDATE task_items SET state='waiting', attempts=?, next_sync_ms=?, error=?, updated_ms=?
              WHERE task_id=? AND book_id=?",
         )
         .bind(item.attempts + 1)
@@ -285,7 +285,7 @@ async fn handle_export_error(state: &AppState, item: &DueItem, e: GatewayError) 
         .bind(&item.book_id)
         .execute(&state.pool)
         .await
-        .context("标记导出项退避失败")?;
+        .context("标记保存项退避失败")?;
         if tripped {
             info!("熔断已触发，worker 将暂停抓取直至冷却结束");
         }

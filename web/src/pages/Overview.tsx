@@ -136,14 +136,14 @@ export default function Overview() {
         <Col xs={24} sm={12} lg={6}>
           <Card size="small">
             <Statistic
-              title="队列（导出中 / 排队书）"
+              title="队列（保存中 / 排队书）"
               value={info ? `${info.queue.running_items} / ${info.queue.waiting}` : '—'}
             />
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
           <Card size="small">
-            <Statistic title="已导出书数" value={info ? info.queue.exported_books : '—'} />
+            <Statistic title="已保存书数" value={info ? info.queue.saved_books : '—'} />
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
@@ -248,12 +248,12 @@ export default function Overview() {
       </ProCard>
 
       <ProCard
-        title="最近导出任务"
+        title="最近保存任务"
         size="small"
         style={{ marginTop: 16 }}
         headerBordered
         extra={
-          <Button type="link" size="small" onClick={() => navigate('/exports')}>
+          <Button type="link" size="small" onClick={() => navigate('/saves')}>
             查看全部
           </Button>
         }
@@ -263,7 +263,7 @@ export default function Overview() {
           rowKey="task_id"
           pagination={false}
           dataSource={recent}
-          onRow={(r) => ({ onClick: () => navigate(`/exports?task=${r.task_id}`), style: { cursor: 'pointer' } })}
+          onRow={(r) => ({ onClick: () => navigate(`/saves?task=${r.task_id}`), style: { cursor: 'pointer' } })}
           columns={[
             { title: '任务 ID', dataIndex: 'task_id', ellipsis: true },
             { title: '状态', dataIndex: 'status', width: 100, render: (_, r) => <TaskStatusTag status={r.status} /> },

@@ -7,11 +7,11 @@ export default function CreateExportModal({ onCreated }: { onCreated: (taskId: s
   const { message } = AntApp.useApp();
   return (
     <ModalForm
-      title="新建导出任务"
+      title="新建保存任务"
       width={520}
       trigger={
         <Button type="primary" icon={<PlusOutlined />}>
-          新建导出
+          新建保存
         </Button>
       }
       modalProps={{ destroyOnClose: true }}
@@ -33,7 +33,7 @@ export default function CreateExportModal({ onCreated }: { onCreated: (taskId: s
             refresh: values.refresh ?? false,
           });
           message.success(
-            `任务已创建（${res.skipped_cached ?? 0} 本命中已有导出，${res.queued_books ?? 0} 本排队抓取）`,
+            `任务已创建（${res.skipped_cached ?? 0} 本命中已有保存，${res.queued_books ?? 0} 本排队抓取）`,
           );
           onCreated(res.task_id);
           return true;
@@ -45,7 +45,7 @@ export default function CreateExportModal({ onCreated }: { onCreated: (taskId: s
     >
       <ProFormSwitch
         name="allBooks"
-        label="导出全部有笔记的书"
+        label="保存全部有笔记的书"
         extra="关闭后可手动指定 bookId（笔记页的列表里有）"
       />
       <ProFormTextArea
@@ -54,7 +54,7 @@ export default function CreateExportModal({ onCreated }: { onCreated: (taskId: s
         placeholder={'每行一个或逗号分隔\n如：3300028061, 934835'}
         dependencies={['allBooks']}
       />
-      <ProFormSwitch name="refresh" label="强制重新导出" extra="已导出的书也重抓并覆盖（默认跳过）" />
+      <ProFormSwitch name="refresh" label="强制重新保存" extra="已保存的书也重抓并覆盖（默认跳过）" />
     </ModalForm>
   );
 }

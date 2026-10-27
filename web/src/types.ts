@@ -173,7 +173,7 @@ export interface ServerInfo {
     waiting: number;
     running_items: number;
     running_tasks: number;
-    exported_books: number;
+    saved_books: number;
   };
   circuit: {
     threshold: number;

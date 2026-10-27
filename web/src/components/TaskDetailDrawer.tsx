@@ -155,7 +155,7 @@ export default function TaskDetailDrawer({
           )}
 
           {result && (
-            <Card size="small" title="导出结果">
+            <Card size="small" title="保存结果">
               <Descriptions size="small" column={1} style={{ marginBottom: 8 }}>
                 <Descriptions.Item label="汇总">
                   {result.summary.succeeded} 本成功

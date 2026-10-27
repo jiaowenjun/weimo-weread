@@ -7,7 +7,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "weread-notes-server", about = "微信读书 Agent Gateway 代理/导出服务器")]
+#[command(name = "weread-notes-server", about = "微信读书 Agent Gateway 代理/笔记保存服务器")]
 pub struct ServerConfig {
     /// 监听地址
     #[arg(long, env = "WEREAD_SERVER_BIND", default_value = "0.0.0.0:8081")]
@@ -45,7 +45,7 @@ pub struct ServerConfig {
     #[arg(long, env = "WEREAD_CIRCUIT_COOLDOWN_SECS", default_value_t = 600)]
     pub circuit_cooldown_secs: i64,
 
-    /// 任务记录保留天数（exports 产物不随任务过期）
+    /// 任务记录保留天数（notes 数据不随任务过期）
     #[arg(long, env = "WEREAD_TASK_RETENTION_DAYS", default_value_t = 30)]
     pub task_retention_days: i64,
 

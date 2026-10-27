@@ -24,16 +24,16 @@ curl -H "X-Weread-Key: wrk-xxxx" http://127.0.0.1:8081/api/v1/notebooks
 curl -H "X-Weread-Key: wrk-xxxx" http://127.0.0.1:8081/api/v1/readdata?mode=overall
 
 # 异步保存（全部/指定书；单书建议 wait_timeout=30 秒级拿终态；
-# 笔记原始 JSON——书/章节/划线/想法——写入后端 SQLite 的 exports 表）
+# 笔记原始 JSON——书/章节/划线/想法——写入后端 SQLite 的 notes 表）
 curl -X POST -H "X-Weread-Key: wrk-xxxx" -H "Content-Type: application/json" \
-     -d '{"book_ids":["3300028061"],"wait_timeout":30}' http://127.0.0.1:8081/api/v1/exports
+     -d '{"book_ids":["3300028061"],"wait_timeout":30}' http://127.0.0.1:8081/api/v1/saves
 
 # 进度（轮询或 SSE）/ 结果
-curl -H "X-Weread-Key: wrk-xxxx" http://127.0.0.1:8081/api/v1/exports/{task_id}
-curl -H "X-Weread-Key: wrk-xxxx" http://127.0.0.1:8081/api/v1/exports/{task_id}/result
+curl -H "X-Weread-Key: wrk-xxxx" http://127.0.0.1:8081/api/v1/saves/{task_id}
+curl -H "X-Weread-Key: wrk-xxxx" http://127.0.0.1:8081/api/v1/saves/{task_id}/result
 ```
 
-管理后台（Vite + React + antd，概览/书架/笔记/导出任务四页面）：
+管理后台（Vite + React + antd，概览/书架/笔记/保存任务四页面）：
 
 ```bash
 cd web && pnpm install && pnpm dev    # http://localhost:5174（代理到 :8081）
@@ -45,14 +45,14 @@ pnpm build                            # 纯静态 dist/，同源或跨源部署
 ```
 浏览器(web/) ─▶ axum API 层
                  ├─ 同步代理（/shelf /notebooks /readdata /books/...）─▶ TTL 缓存(SQLite) ─▶ ThrottledGateway ─▶ 官方 Agent Gateway
-                 └─ 异步保存（/exports）─▶ DB 即队列 ─▶ 单 worker 逐书抓取 → 原始 JSON 入库(exports 表) → SSE 进度
+                 └─ 异步保存（/saves）─▶ DB 即队列 ─▶ 单 worker 逐书抓取 → 原始 JSON 入库(notes 表) → SSE 进度
 ```
 
-与范本 douban-api 的关键差异：上游是快速官方 API 而非慢速爬虫 → 快接口同步代理、仅批量保存任务化；单 Key 单用户 → 无 uid 维度；持久化双轨（cache_entries 可再生 / exports 长期资产）。详见设计文档第 0/2 节。
+与范本 douban-api 的关键差异：上游是快速官方 API 而非慢速爬虫 → 快接口同步代理、仅批量保存任务化；单 Key 单用户 → 无 uid 维度；持久化双轨（cache_entries 可再生 / notes 长期资产）。详见设计文档第 0/2 节。
 
 ## 内置防护
 
-服务器不持有任何默认 Key（BYOK，凭据只经请求传递，本地 SQLite 仅任务表存 Key 供 worker 续跑）；网关调用全局限速（默认 ≥500ms + 抖动，跨所有 Key 共享一把节流锁）；单 worker 串行；书级失败退避重试（3 次）+ 连续 5 次失败熔断 10 分钟；per-IP 限流（60 req/min）；bookId 白名单字符校验；任务/缓存/导出产物按 Key 指纹隔离。
+服务器不持有任何默认 Key（BYOK，凭据只经请求传递，本地 SQLite 仅任务表存 Key 供 worker 续跑）；网关调用全局限速（默认 ≥500ms + 抖动，跨所有 Key 共享一把节流锁）；单 worker 串行；书级失败退避重试（3 次）+ 连续 5 次失败熔断 10 分钟；per-IP 限流（60 req/min）；bookId 白名单字符校验；任务/缓存/已保存笔记按 Key 指纹隔离。
 
 ## 配置（环境变量）
 
@@ -64,7 +64,7 @@ pnpm build                            # 纯静态 dist/，同源或跨源部署
 | `WEREAD_CACHE_TTL_SECS` | 3600 | 代理缓存 TTL |
 | `WEREAD_GATEWAY_MIN_INTERVAL_MS` | 500 | 网关调用最小间隔 |
 | `WEREAD_CIRCUIT_THRESHOLD / _COOLDOWN_SECS` | 5 / 600 | 熔断阈值/冷却 |
-| `WEREAD_TASK_RETENTION_DAYS` | 30 | 任务记录保留（exports 笔记数据永久） |
+| `WEREAD_TASK_RETENTION_DAYS` | 30 | 任务记录保留（notes 笔记数据永久） |
 | `WEREAD_RATE_PER_MINUTE` | 60 | 每 IP 每分钟请求上限 |
 | `WEREAD_SERVER_CORS_ORIGINS` | 空 | 允许的跨源来源（逗号分隔） |
 
@@ -78,4 +78,4 @@ cargo test    # 25 个集成测试：FakeGateway + tempdir SQLite + oneshot，�
 
 - 官方网关**全只读**、仅本人数据、无书籍正文（详见能力清单第 9 节）
 - 网关真实限额未知，默认 500ms 间隔是保守值（可用环境变量调整）
-- 笔记以原始 JSON 整体存于 exports 表（未正规化为明细表）；已保存数据暂无读回端点，查看笔记走实时代理
+- 笔记以原始 JSON 整体存于 notes 表（未正规化为明细表）；已保存数据暂无读回端点，查看笔记走实时代理

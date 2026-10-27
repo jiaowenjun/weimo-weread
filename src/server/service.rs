@@ -420,7 +420,7 @@ pub fn validate_book_id(id: &str) -> AppResult<()> {
 }
 
 // --------------------------------------------------------------------------- //
-// 导出任务
+// 保存任务
 // --------------------------------------------------------------------------- //
 
 #[derive(Debug, Clone)]
@@ -473,7 +473,7 @@ pub async fn create_task(
     };
     if requested.is_empty() {
         return Err(AppError::InvalidArgument(
-            "没有可导出的书（笔记本为空或 book_ids 无效）".to_string(),
+            "没有可保存的书（笔记本为空或 book_ids 无效）".to_string(),
         ));
     }
 
@@ -487,17 +487,17 @@ pub async fn create_task(
         return Err(AppError::TooManyTasks);
     }
 
-    // 该 Key 已导出的书直接跳过（除非 refresh）
+    // 该 Key 已保存的书直接跳过（除非 refresh）
     struct Item {
         book_id: String,
-        exported: Option<(i64, i64)>,
+        saved: Option<(i64, i64)>,
     }
     let mut items: Vec<Item> = Vec::with_capacity(requested.len());
     for book_id in &requested {
-        let exported: Option<(i64, i64)> = if input.refresh {
+        let saved: Option<(i64, i64)> = if input.refresh {
             None
         } else {
-            sqlx::query_as("SELECT bookmarks, reviews FROM exports WHERE owner = ? AND book_id = ?")
+            sqlx::query_as("SELECT bookmarks, reviews FROM notes WHERE owner = ? AND book_id = ?")
                 .bind(&owner)
                 .bind(book_id)
                 .fetch_optional(&state.pool)
@@ -505,14 +505,14 @@ pub async fn create_task(
         };
         items.push(Item {
             book_id: book_id.clone(),
-            exported,
+            saved,
         });
     }
-    let queued_count = items.iter().filter(|i| i.exported.is_none()).count() as i64;
+    let queued_count = items.iter().filter(|i| i.saved.is_none()).count() as i64;
 
     // 队列长度上限
     let waiting: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM export_items WHERE state = 'waiting'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM task_items WHERE state = 'waiting'")
             .fetch_one(&state.pool)
             .await?;
     if waiting + queued_count > state.config.queue_limit {
@@ -539,24 +539,24 @@ pub async fn create_task(
 
     for item in &items {
         sqlx::query(
-            "INSERT INTO export_items (task_id, book_id, state, bookmarks, reviews, updated_ms)
+            "INSERT INTO task_items (task_id, book_id, state, bookmarks, reviews, updated_ms)
              VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(&task_id)
         .bind(&item.book_id)
-        .bind(if item.exported.is_some() { "skipped" } else { "waiting" })
-        .bind(item.exported.map(|c| c.0))
-        .bind(item.exported.map(|c| c.1))
+        .bind(if item.saved.is_some() { "skipped" } else { "waiting" })
+        .bind(item.saved.map(|c| c.0))
+        .bind(item.saved.map(|c| c.1))
         .bind(now)
         .execute(&state.pool)
         .await?;
     }
 
-    let skipped_cached = items.iter().filter(|i| i.exported.is_some()).count();
+    let skipped_cached = items.iter().filter(|i| i.saved.is_some()).count();
     if queued_count > 0 {
         state.wake_worker();
     } else {
-        // 全部命中已有导出 → 直接终态
+        // 全部命中已有保存 → 直接终态
         recompute_task_status(state, &task_id).await?;
     }
 
@@ -602,7 +602,7 @@ async fn lookup_title(state: &AppState, owner: &str, book_id: &str) -> Option<St
         return Some(title);
     }
     let data: Option<String> =
-        sqlx::query_scalar("SELECT data_json FROM exports WHERE owner = ? AND book_id = ?")
+        sqlx::query_scalar("SELECT data_json FROM notes WHERE owner = ? AND book_id = ?")
             .bind(owner)
             .bind(book_id)
             .fetch_optional(&state.pool)
@@ -634,7 +634,7 @@ pub async fn get_task(state: &AppState, key: &str, task_id: &str) -> AppResult<T
     let status: String = row.get("status");
 
     let states: Vec<(String, i64)> =
-        sqlx::query_as("SELECT state, COUNT(*) FROM export_items WHERE task_id = ? GROUP BY state")
+        sqlx::query_as("SELECT state, COUNT(*) FROM task_items WHERE task_id = ? GROUP BY state")
             .bind(task_id)
             .fetch_all(&state.pool)
             .await?;
@@ -653,7 +653,7 @@ pub async fn get_task(state: &AppState, key: &str, task_id: &str) -> AppResult<T
     let total_books = done + skipped + failed + pending;
 
     let current_book_id: Option<String> = sqlx::query(
-        "SELECT book_id FROM export_items WHERE task_id = ? AND state = 'running' LIMIT 1",
+        "SELECT book_id FROM task_items WHERE task_id = ? AND state = 'running' LIMIT 1",
     )
     .bind(task_id)
     .fetch_optional(&state.pool)
@@ -696,7 +696,7 @@ pub async fn get_task(state: &AppState, key: &str, task_id: &str) -> AppResult<T
         started_at: row.get::<Option<i64>, _>("started_ms").map(ms_to_rfc3339),
         finished_at: row.get::<Option<i64>, _>("finished_ms").map(ms_to_rfc3339),
         expires_at: row.get::<Option<i64>, _>("expires_ms").map(ms_to_rfc3339),
-        result_url: format!("/api/v1/exports/{task_id}/result"),
+        result_url: format!("/api/v1/saves/{task_id}/result"),
     })
 }
 
@@ -747,7 +747,7 @@ pub async fn list_tasks(
         }
         let task_id: String = r.get("task_id");
         summaries.push(TaskSummary {
-            url: format!("/api/v1/exports/{task_id}"),
+            url: format!("/api/v1/saves/{task_id}"),
             task_id,
             status: r.get("status"),
             items_count: r.get("items_count"),
@@ -772,8 +772,8 @@ pub async fn delete_task(state: &AppState, key: &str, task_id: &str) -> AppResul
     if exists.is_none() {
         return Err(AppError::TaskNotFound(task_id.to_string()));
     }
-    // 只删任务记录；exports 产物与任务生命周期解耦，长期保留
-    sqlx::query("DELETE FROM export_items WHERE task_id = ?")
+    // 只删任务记录；notes 产物与任务生命周期解耦，长期保留
+    sqlx::query("DELETE FROM task_items WHERE task_id = ?")
         .bind(task_id)
         .execute(&state.pool)
         .await?;
@@ -820,7 +820,7 @@ pub async fn task_result(state: &AppState, key: &str, task_id: &str) -> AppResul
     }
 
     let items = sqlx::query(
-        "SELECT book_id, state, bookmarks, reviews, error FROM export_items
+        "SELECT book_id, state, bookmarks, reviews, error FROM task_items
          WHERE task_id = ? ORDER BY rowid",
     )
     .bind(task_id)
@@ -877,7 +877,7 @@ pub async fn recompute_task_status(state: &AppState, task_id: &str) -> anyhow::R
     let rows: Vec<(String, i64, i64)> = sqlx::query_as(
         "SELECT state, COUNT(*) AS n,
                 COALESCE(SUM(COALESCE(bookmarks,0) + COALESCE(reviews,0)), 0) AS items
-         FROM export_items WHERE task_id = ? GROUP BY state",
+         FROM task_items WHERE task_id = ? GROUP BY state",
     )
     .bind(task_id)
     .fetch_all(&state.pool)
@@ -929,15 +929,15 @@ pub async fn recompute_task_status(state: &AppState, task_id: &str) -> anyhow::R
 
     if status != "completed" {
         let failed_books: Vec<(String, String)> = sqlx::query_as(
-            "SELECT book_id, COALESCE(error, '') FROM export_items
+            "SELECT book_id, COALESCE(error, '') FROM task_items
              WHERE task_id = ? AND state = 'error'",
         )
         .bind(task_id)
         .fetch_all(&state.pool)
         .await?;
         let error_json = json!({
-            "code": if status == "partial" { "EXPORT_PARTIAL" } else { "EXPORT_FAILED" },
-            "message": format!("{error} 本书导出失败"),
+            "code": if status == "partial" { "SAVE_PARTIAL" } else { "SAVE_FAILED" },
+            "message": format!("{error} 本书保存失败"),
             "failed_books": failed_books
                 .iter()
                 .map(|(id, e)| json!({"book_id": id, "error": e}))
@@ -975,7 +975,7 @@ async fn cleanup_once(state: &AppState) -> anyhow::Result<()> {
     .fetch_all(&state.pool)
     .await?;
     for task_id in expired {
-        sqlx::query("DELETE FROM export_items WHERE task_id = ?")
+        sqlx::query("DELETE FROM task_items WHERE task_id = ?")
             .bind(&task_id)
             .execute(&state.pool)
             .await?;
@@ -983,7 +983,7 @@ async fn cleanup_once(state: &AppState) -> anyhow::Result<()> {
             .bind(&task_id)
             .execute(&state.pool)
             .await?;
-        tracing::info!(task_id = %task_id, "清理过期任务（exports 产物保留）");
+        tracing::info!(task_id = %task_id, "清理过期任务（notes 产物保留）");
     }
 
     // 缓存表防止无限增长：过期超过 7 天的条目清理
@@ -1000,11 +1000,11 @@ async fn cleanup_once(state: &AppState) -> anyhow::Result<()> {
 
 pub async fn server_info(state: &AppState) -> AppResult<Value> {
     let waiting: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM export_items WHERE state = 'waiting'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM task_items WHERE state = 'waiting'")
             .fetch_one(&state.pool)
             .await?;
     let running_items: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM export_items WHERE state = 'running'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM task_items WHERE state = 'running'")
             .fetch_one(&state.pool)
             .await?;
     let running_tasks: i64 = sqlx::query_scalar(
@@ -1012,7 +1012,7 @@ pub async fn server_info(state: &AppState) -> AppResult<Value> {
     )
     .fetch_one(&state.pool)
     .await?;
-    let exported_books: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM exports")
+    let saved_books: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes")
         .fetch_one(&state.pool)
         .await?;
     let circuit_remaining = state.circuit_remaining_ms();
@@ -1030,7 +1030,7 @@ pub async fn server_info(state: &AppState) -> AppResult<Value> {
             "waiting": waiting,
             "running_items": running_items,
             "running_tasks": running_tasks,
-            "exported_books": exported_books,
+            "saved_books": saved_books,
         },
         "circuit": {
             "threshold": state.config.circuit_threshold,
