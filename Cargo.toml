@@ -2,16 +2,12 @@
 name = "weread-notes"
 version = "0.1.0"
 edition = "2021"
-description = "微信读书官方 Agent Gateway 工具（CLI + 服务器）"
+description = "微信读书官方 Agent Gateway 笔记服务（HTTP 服务器 + 管理后台）"
 license = "MIT"
 
 [lib]
 name = "weread_notes"
 path = "src/lib.rs"
-
-[[bin]]
-name = "weread-notes"
-path = "src/bin/weread-notes.rs"
 
 [[bin]]
 name = "weread-notes-server"

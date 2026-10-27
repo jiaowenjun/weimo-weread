@@ -1,22 +1,11 @@
 # weread-notes
 
-基于**微信读书官方 Agent Gateway**（`wrk-` API Key）的读书笔记工具：书架/笔记/统计的代理服务 + 笔记原始数据落库，提供 **CLI** 与 **HTTP 服务器 + 管理后台** 两种形态，共享同一网关客户端与编排逻辑。
+基于**微信读书官方 Agent Gateway**（`wrk-` API Key）的读书笔记服务：书架/笔记/统计的代理服务 + 笔记原始数据落库，形态为 **HTTP 服务器 + 管理后台**。
 
 - 协议与坑：[docs/weread-api-projects-deep-dive.md](docs/weread-api-projects-deep-dive.md) §2/§2.5
 - 官方 17 接口能力清单：[docs/weread-api-capabilities.md](docs/weread-api-capabilities.md)
 - 服务器设计（架构决策、API 规范、数据模型）：[docs/weread-server-design.md](docs/weread-server-design.md)（已实现）
 - 前端说明：[web/README.md](web/README.md)
-
-## 使用（CLI）
-
-```bash
-cargo build --release
-export WEREAD_API_KEY=wrk-xxxx          # 获取: https://weread.qq.com/r/weread-skills
-
-./target/release/weread-notes notebooks              # 笔记本概览（哪些书做过笔记）
-./target/release/weread-notes raw '/shelf/sync'      # 任意网关接口直调
-./target/release/weread-notes apis                   # 网关接口自描述(/_list)
-```
 
 ## 使用（服务器 + 管理后台）
 
@@ -57,7 +46,6 @@ pnpm build                            # 纯静态 dist/，同源或跨源部署
 浏览器(web/) ─▶ axum API 层
                  ├─ 同步代理（/shelf /notebooks /readdata /books/...）─▶ TTL 缓存(SQLite) ─▶ ThrottledGateway ─▶ 官方 Agent Gateway
                  └─ 异步保存（/exports）─▶ DB 即队列 ─▶ 单 worker 逐书抓取 → 原始 JSON 入库(exports 表) → SSE 进度
-CLI(weread-notes) ────────────── 共享 lib：client(协议) + fetch(编排)
 ```
 
 与范本 douban-api 的关键差异：上游是快速官方 API 而非慢速爬虫 → 快接口同步代理、仅批量保存任务化；单 Key 单用户 → 无 uid 维度；持久化双轨（cache_entries 可再生 / exports 长期资产）。详见设计文档第 0/2 节。

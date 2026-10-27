@@ -1,7 +1,7 @@
 //! HTTP 路由与中间件（Key 鉴权、客户端限流、CORS）。
 //!
 //! BYOK：所有 `/api/v1` 端点要求微信读书 API Key——`X-Weread-Key` 请求头
-//! 或 `?key=` 查询参数（EventSource / 下载直链场景）。服务器不持有任何默认 Key。
+//! 或 `?key=` 查询参数（EventSource 场景）。服务器不持有任何默认 Key。
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -41,11 +41,11 @@ pub fn build_app(state: AppState) -> Router {
         .route("/search", get(get_search))
         .route("/gateway/apis", get(get_gateway_apis))
         .route("/gateway/call", post(post_gateway_call))
-        // 导出任务
-        .route("/exports", get(list_exports).post(create_export))
-        .route("/exports/{task_id}", get(get_export).delete(delete_export))
-        .route("/exports/{task_id}/result", get(get_result))
-        .route("/exports/{task_id}/events", get(get_export_events))
+        // 保存任务
+        .route("/saves", get(list_saves).post(create_save))
+        .route("/saves/{task_id}", get(get_save).delete(delete_save))
+        .route("/saves/{task_id}/result", get(get_result))
+        .route("/saves/{task_id}/events", get(get_save_events))
         // 系统
         .route("/server/info", get(server_info))
         .layer(middleware::from_fn_with_state(
@@ -89,7 +89,7 @@ async fn key_middleware(
     mut req: axum::http::Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, AppError> {
-    // 头优先；EventSource / <a download> 无法设头，允许 ?key= 查询参数兜底
+    // 头优先；EventSource 无法设头，允许 ?key= 查询参数兜底
     let key = req
         .headers()
         .get("x-weread-key")
@@ -379,7 +379,7 @@ async fn post_gateway_call(
 }
 
 // --------------------------------------------------------------------------- //
-// /exports
+// /saves
 // --------------------------------------------------------------------------- //
 
 #[derive(serde::Deserialize, Default)]
@@ -393,8 +393,8 @@ struct CreateReq {
     wait_timeout: u64,
 }
 
-/// 创建导出任务。body 手动解析以保证错误信封统一（400 而非 axum 默认 422）。
-async fn create_export(
+/// 创建保存任务。body 手动解析以保证错误信封统一（400 而非 axum 默认 422）。
+async fn create_save(
     State(state): State<AppState>,
     Extension(WereadKey(key)): Extension<WereadKey>,
     body: Bytes,
@@ -447,7 +447,7 @@ async fn create_export(
     Ok((code, Json(body)).into_response())
 }
 
-async fn get_export(
+async fn get_save(
     State(state): State<AppState>,
     Extension(WereadKey(key)): Extension<WereadKey>,
     Path(task_id): Path<String>,
@@ -462,7 +462,7 @@ struct ListQuery {
     cursor: Option<i64>,
 }
 
-async fn list_exports(
+async fn list_saves(
     State(state): State<AppState>,
     Extension(WereadKey(key)): Extension<WereadKey>,
     Query(q): Query<ListQuery>,
@@ -490,7 +490,7 @@ async fn list_exports(
     })))
 }
 
-async fn delete_export(
+async fn delete_save(
     State(state): State<AppState>,
     Extension(WereadKey(key)): Extension<WereadKey>,
     Path(task_id): Path<String>,
@@ -518,7 +518,7 @@ fn task_event(name: &str, view: &TaskView) -> Result<Event, Infallible> {
 
 /// SSE 流：先推当前快照（progress），随后仅在进度变更时推送；
 /// 终态推 done（partial 也归 done，内容里带 error）/ error 后关流。
-async fn get_export_events(
+async fn get_save_events(
     State(state): State<AppState>,
     Extension(WereadKey(key)): Extension<WereadKey>,
     Path(task_id): Path<String>,
