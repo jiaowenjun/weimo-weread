@@ -2,7 +2,7 @@
 
 > **数据来源**：网关 `/_list` 接口自描述（2026-10-25 实测拉取），17 个业务接口 + 1 个元接口
 > **适用对象**：基于官方 API Key（`wrk-`）开发生态工具的开发者
-> **配套实现**：[`weread_notes.py`](../weread_notes.py)（笔记导出部分已实现，`raw` 子命令可直调以下任意接口）
+> **配套实现**：[`weread_notes.py`](../weread_notes.py)（Python 参考版）与 [`src/`](../src/)（Rust 版，`cargo run --` 同名子命令），`raw` 子命令可直调以下任意接口
 
 ---
 
