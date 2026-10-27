@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { App as AntApp, Badge, Button, Card, Col, Empty, Input, List, Row, Spin, Tag, Tooltip } from 'antd';
+import { App as AntApp, Badge, Button, Card, Col, Empty, Input, List, Row, Spin, Tag, Tooltip, theme } from 'antd';
 import { DownloadOutlined, ExportOutlined, ReloadOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
 import dayjs from 'dayjs';
@@ -16,6 +16,7 @@ function fmtTs(v: unknown): string {
 /** 单书笔记面板：按章节分组渲染划线 + 我的想法（结构对齐导出的 Markdown） */
 function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: () => void }) {
   const { message } = AntApp.useApp();
+  const { token } = theme.useToken();
   const [envelope, setEnvelope] = useState<CachedEnvelope<BookNotesData> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,7 +95,7 @@ function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: (
       size="small"
       title={
         <span>
-          {title} {author && <span style={{ color: '#888', fontSize: 12 }}>· {author}</span>}
+          {title} {author && <span style={{ color: token.colorTextDescription, fontSize: 12 }}>· {author}</span>}
         </span>
       }
       extra={
@@ -129,12 +130,12 @@ function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: (
       }
     >
       {loading && <Spin style={{ display: 'block', margin: '24px auto' }} />}
-      {error && !loading && <div style={{ color: '#ff4d4f' }}>{error}</div>}
+      {error && !loading && <div style={{ color: token.colorError }}>{error}</div>}
       {notes && !loading && (
         <div style={{ maxHeight: 'calc(100vh - 210px)', overflow: 'auto', paddingRight: 4 }}>
           {grouped.map((g) => (
             <div key={g.uid} style={{ marginBottom: 16 }}>
-              <div style={{ fontWeight: 600, borderBottom: '1px solid #f0f0f0', paddingBottom: 4, marginBottom: 8 }}>
+              <div style={{ fontWeight: 600, borderBottom: `1px solid ${token.colorSplit}`, paddingBottom: 4, marginBottom: 8 }}>
                 {g.title}
                 <Tag style={{ marginLeft: 8 }}>{g.items.length} 划线</Tag>
               </div>
@@ -144,14 +145,14 @@ function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: (
                   style={{
                     margin: '0 0 8px',
                     padding: '4px 12px',
-                    borderLeft: '3px solid #d9d9d9',
-                    background: '#fafafa',
-                    color: '#333',
+                    borderLeft: `3px solid ${token.colorBorderSecondary}`,
+                    background: token.colorFillQuaternary,
+                    color: token.colorText,
                   }}
                 >
                   <div>{b.markText}</div>
                   {b.createTime != null && (
-                    <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>{fmtTs(b.createTime)}</div>
+                    <div style={{ fontSize: 12, color: token.colorTextTertiary, marginTop: 2 }}>{fmtTs(b.createTime)}</div>
                   )}
                 </blockquote>
               ))}
@@ -160,21 +161,21 @@ function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: (
 
           {(notes.reviews?.length ?? 0) > 0 && (
             <div>
-              <div style={{ fontWeight: 600, borderBottom: '1px solid #f0f0f0', paddingBottom: 4, marginBottom: 8 }}>
+              <div style={{ fontWeight: 600, borderBottom: `1px solid ${token.colorSplit}`, paddingBottom: 4, marginBottom: 8 }}>
                 我的想法
                 <Tag style={{ marginLeft: 8 }}>{notes.reviews.length} 条</Tag>
               </div>
               {notes.reviews.map((r) => (
                 <div
                   key={r.reviewId}
-                  style={{ marginBottom: 10, padding: '6px 12px', background: '#f6ffed', borderRadius: 4 }}
+                  style={{ marginBottom: 10, padding: '6px 12px', background: token.colorSuccessBg, borderRadius: 4 }}
                 >
-                  <div>{r.review?.content || <span style={{ color: '#888' }}>(仅标注)</span>}</div>
+                  <div>{r.review?.content || <span style={{ color: token.colorTextDescription }}>(仅标注)</span>}</div>
                   {r.review?.abstract && (
-                    <div style={{ fontSize: 12, color: '#888', marginTop: 4 }}>原文：{r.review.abstract}</div>
+                    <div style={{ fontSize: 12, color: token.colorTextDescription, marginTop: 4 }}>原文：{r.review.abstract}</div>
                   )}
                   {r.review?.createTime != null && (
-                    <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>{fmtTs(r.review.createTime)}</div>
+                    <div style={{ fontSize: 12, color: token.colorTextTertiary, marginTop: 2 }}>{fmtTs(r.review.createTime)}</div>
                   )}
                 </div>
               ))}
@@ -192,6 +193,7 @@ function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: (
 
 export default function Notes() {
   const navigate = useNavigate();
+  const { token } = theme.useToken();
   const [envelope, setEnvelope] = useState<CachedEnvelope<NotebooksData> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -246,7 +248,7 @@ export default function Notes() {
         </Button>,
       ]}
     >
-      {error && <div style={{ color: '#ff4d4f', marginBottom: 12 }}>{error}</div>}
+      {error && <div style={{ color: token.colorError, marginBottom: 12 }}>{error}</div>}
       <Row gutter={16}>
         <Col xs={24} md={10} lg={8}>
           <Card
@@ -274,7 +276,7 @@ export default function Notes() {
                   style={{
                     cursor: 'pointer',
                     padding: '8px 12px',
-                    background: selected === nb.bookId ? '#e6f4ff' : undefined,
+                    background: selected === nb.bookId ? token.colorPrimaryBg : undefined,
                   }}
                   onClick={() => setSelected(nb.bookId)}
                 >

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Button, Drawer, Progress, Spin, Table, Tag, Collapse, Descriptions, Empty } from 'antd';
+import { Button, Drawer, Progress, Spin, Table, Tag, Collapse, Descriptions, Empty, theme } from 'antd';
 import { PageContainer, ProCard } from '@ant-design/pro-components';
 import { ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -12,6 +12,7 @@ type BookInfoEnvelope = CachedEnvelope<Record<string, unknown>>;
 type ChaptersEnvelope = CachedEnvelope<{ chapters?: { chapterUid: number; title: string }[] }>;
 
 function BookDetailDrawer({ bookId, onClose }: { bookId: string | null; onClose: () => void }) {
+  const { token } = theme.useToken();
   const [info, setInfo] = useState<BookInfoEnvelope | null>(null);
   const [chapters, setChapters] = useState<ChaptersEnvelope | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,7 +54,7 @@ function BookDetailDrawer({ bookId, onClose }: { bookId: string | null; onClose:
   return (
     <Drawer open={!!bookId} onClose={onClose} width={480} title={`书籍详情 ${bookId ?? ''}`}>
       {loading && <Spin />}
-      {error && <div style={{ color: '#ff4d4f' }}>{error}</div>}
+      {error && <div style={{ color: token.colorError }}>{error}</div>}
       {!loading && !error && info && (
         <>
           <Descriptions size="small" column={1} bordered>
@@ -82,7 +83,7 @@ function BookDetailDrawer({ bookId, onClose }: { bookId: string | null; onClose:
                 children: (
                   <div style={{ maxHeight: 400, overflow: 'auto' }}>
                     {(chapters?.data?.chapters ?? []).map((c) => (
-                      <div key={c.chapterUid} style={{ padding: '2px 0', borderBottom: '1px solid #f5f5f5' }}>
+                      <div key={c.chapterUid} style={{ padding: '2px 0', borderBottom: `1px solid ${token.colorSplit}` }}>
                         {c.title}
                       </div>
                     ))}
@@ -98,6 +99,7 @@ function BookDetailDrawer({ bookId, onClose }: { bookId: string | null; onClose:
 }
 
 export default function Shelf() {
+  const { token } = theme.useToken();
   const [searchParams] = useSearchParams();
   const [envelope, setEnvelope] = useState<CachedEnvelope<ShelfData> | null>(null);
   const [loading, setLoading] = useState(false);
@@ -143,7 +145,7 @@ export default function Shelf() {
         </Button>,
       ]}
     >
-      {error && <div style={{ color: '#ff4d4f', marginBottom: 12 }}>{error}</div>}
+      {error && <div style={{ color: token.colorError, marginBottom: 12 }}>{error}</div>}
       {(albums.length > 0 || archive.length > 0) && (
         <ProCard size="small" style={{ marginBottom: 12 }}>
           听书专辑 {albums.length} 个 · 自建书单 {archive.length} 个（v1 仅展示电子书列表）

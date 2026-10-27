@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Alert, Badge, Button, Card, Col, Empty, Progress, Row, Statistic, Table, Tooltip } from 'antd';
+import { Alert, Badge, Button, Card, Col, Empty, Progress, Row, Statistic, Table, Tooltip, theme } from 'antd';
 import { PageContainer, ProCard } from '@ant-design/pro-components';
 import { ReloadOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
@@ -30,6 +30,7 @@ function pickStr(data: ReadData | null, keys: string[]): string | null {
 
 export default function Overview() {
   const navigate = useNavigate();
+  const { token } = theme.useToken();
   const [info, setInfo] = useState<ServerInfo | null>(null);
   const [online, setOnline] = useState<boolean | null>(null);
   const [connError, setConnError] = useState<string | null>(null);
@@ -167,7 +168,7 @@ export default function Overview() {
 
       <ProCard title="阅读统计（整体）" size="small" style={{ marginTop: 16 }} headerBordered extra={
         <Tooltip title="数据来自官方网关 /readdata/detail，缓存 1 小时">
-          <span style={{ color: '#888' }}>官方统计</span>
+          <span style={{ color: token.colorTextDescription }}>官方统计</span>
         </Tooltip>
       }>
         {readdata ? (

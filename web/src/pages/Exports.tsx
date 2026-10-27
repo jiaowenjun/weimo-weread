@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { App as AntApp, Popconfirm } from 'antd';
+import { App as AntApp, Popconfirm, theme } from 'antd';
 import { ActionType, PageContainer, ProTable, type ProColumns } from '@ant-design/pro-components';
 import dayjs from 'dayjs';
 import type { TaskSummary } from '../types';
@@ -12,6 +12,7 @@ import TaskDetailDrawer from '../components/TaskDetailDrawer';
 const ACTIVE = ['queued', 'running'];
 
 export default function Exports() {
+  const { token } = theme.useToken();
   const actionRef = useRef<ActionType>();
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const [hasActive, setHasActive] = useState(false);
@@ -72,7 +73,7 @@ export default function Exports() {
             }
           }}
         >
-          <a style={{ color: '#ff4d4f' }}>删除</a>
+          <a style={{ color: token.colorError }}>删除</a>
         </Popconfirm>,
       ],
     },
