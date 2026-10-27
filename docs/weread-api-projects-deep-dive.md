@@ -122,7 +122,7 @@ Content-Type: application/json
 | 6 | `/review/list/mine` 的列表项为 `{reviewId, review: {...}}` 双层嵌套：`createTime`/`chapterUid`/`abstract`（划线原文）/`content`（想法文字）都在**内层** `review` 对象 | 顶层取 `createTime`/`content` 会得到 null，导出渲染会落空 |
 | 7 | `/user/notebooks` 响应含 `totalBookCount`/`totalNoteCount` 汇总字段；该实测账号 108 本有笔记的书、1604 条笔记 | — |
 
-复现代码：[`weread_notes.py`](../weread_notes.py)（仅 Python 标准库，`python3 weread_notes.py apis|notebooks|export <bookId>`）。
+复现代码：[`src/`](../src/)（Rust 实现，`cargo run -- apis|notebooks|export <bookId>`；早期的 Python 原型已在纯 Rust 重构时移除）。
 
 ---
 

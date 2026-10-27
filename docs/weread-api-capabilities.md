@@ -2,7 +2,7 @@
 
 > **数据来源**：网关 `/_list` 接口自描述（2026-10-25 实测拉取），17 个业务接口 + 1 个元接口
 > **适用对象**：基于官方 API Key（`wrk-`）开发生态工具的开发者
-> **配套实现**：[`weread_notes.py`](../weread_notes.py)（Python 参考版）与 [`src/`](../src/)（Rust 版，`cargo run --` 同名子命令），`raw` 子命令可直调以下任意接口
+> **配套实现**：[`src/`](../src/)（Rust 实现，`cargo run -- <子命令>`），`raw` 子命令可直调以下任意接口
 
 ---
 
@@ -57,7 +57,7 @@
 | `/book/bookmarklist` | 单书划线列表 | `bookId`（必填） | 一次返回 `updated[]`（划线）+ `chapters`（章节表）+ `book`（书籍信息），**单书导出只需再补一次 `/review/list/mine`**；还有 `removed[]`（已删划线）和 `synckey`（增量） |
 | `/review/list/mine` | 我的想法 | `bookid`（⚠️ 小写 d，必填）、`synckey`、`count` | 列表项双层嵌套：文字在内层 `review.content`，对应划线原文在 `review.abstract`，`createTime`/`chapterUid` 也都在内层 |
 
-**典型用法**（已在 `weread_notes.py` 实现）：`notebooks` 选书 → `bookmarklist` + `review/list/mine` → 生成按章节分组、带时间戳和原文引用的 Markdown。
+**典型用法**（已在本仓库 Rust 实现中落地）：`notebooks` 选书 → `bookmarklist` + `review/list/mine` → 生成按章节分组、带时间戳和原文引用的 Markdown。
 
 ## 4. 公开社区内容
 
@@ -105,7 +105,7 @@
 
 | 高阶功能 | 编排方式 | 验证项目 |
 |---|---|---|
-| 单书笔记导出（Markdown/Obsidian/Notion） | notebooks → bookmarklist + review/list/mine | weread_notes.py、obsidian 系插件 |
+| 单书笔记导出（Markdown/Obsidian/Notion） | notebooks → bookmarklist + review/list/mine | 本仓库 weread-notes(Rust)、obsidian 系插件 |
 | 阅读概况卡片 | shelf/sync → 排序 → N × getprogress | OpenWeRead 的 `profile` 模块 |
 | 阅读年度报告/自画像 | readdata/detail(overall+annually) + notebooks 汇总 | weread-report、read-persona 等 |
 | 知识地图与缺口推荐 | shelf/sync × user/notebooks 交叉（书架=兴趣，笔记=真读过）→ store/search 验证上架 | huashu-weread 的 advisor 工作流 |
