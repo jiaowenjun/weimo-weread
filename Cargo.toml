@@ -1,0 +1,16 @@
+[package]
+name = "weread-notes"
+version = "0.1.0"
+edition = "2021"
+description = "微信读书官方 Agent Gateway 读书笔记工具 (Rust 版)"
+license = "MIT"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+
+[profile.release]
+strip = true

@@ -1,0 +1,105 @@
+mod client;
+mod commands;
+mod markdown;
+
+use clap::{Parser, Subcommand};
+
+use client::{GatewayError, WereadClient, GATEWAY_URL};
+
+#[derive(Parser)]
+#[command(
+    name = "weread-notes",
+    version,
+    about = "微信读书官方 Agent Gateway 读书笔记工具 (Rust 版)"
+)]
+struct Cli {
+    /// API Key (默认读环境变量 WEREAD_API_KEY, wrk- 前缀)
+    #[arg(long, env = "WEREAD_API_KEY")]
+    key: Option<String>,
+    /// 覆盖网关地址(调试用)
+    #[arg(long, default_value = GATEWAY_URL)]
+    base_url: String,
+    /// 请求超时(秒)
+    #[arg(long, default_value_t = 30)]
+    timeout: u64,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// 笔记本概览: 哪些书做过笔记
+    Notebooks {
+        #[arg(long, default_value_t = 30)]
+        limit: usize,
+        #[arg(long, default_value_t = 100)]
+        page_size: u64,
+    },
+    /// 导出某本书的划线+想法为 Markdown
+    Export {
+        book_id: String,
+        /// 写入文件(默认打印到终端)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// 任意 api_name 直调, 参数用 k=v 形式
+    Raw {
+        api_name: String,
+        /// 如 count=3 lastSort=100
+        params: Vec<String>,
+    },
+    /// 网关接口自描述(/_list)
+    Apis,
+}
+
+fn mask(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() > 16 {
+        let head: String = chars[..8].iter().collect();
+        let tail: String = chars[chars.len() - 4..].iter().collect();
+        format!("{}...{}", head, tail)
+    } else {
+        "***".to_string()
+    }
+}
+
+/// 统一错误出口: (用户可读信息, 进退出码)。
+fn gw_err(e: GatewayError) -> (String, i32) {
+    let code = match &e {
+        GatewayError::MissingAuth => 2,
+        GatewayError::Upgrade(_) => 3,
+        _ => 1,
+    };
+    (e.to_string(), code)
+}
+
+fn main() {
+    let cli = Cli::parse();
+    let code = match run(cli) {
+        Ok(()) => 0,
+        Err((msg, code)) => {
+            if !msg.is_empty() {
+                eprintln!("{}", msg);
+            }
+            code
+        }
+    };
+    std::process::exit(code);
+}
+
+fn run(cli: Cli) -> Result<(), (String, i32)> {
+    let client = WereadClient::new(cli.key.clone(), &cli.base_url, cli.timeout).map_err(gw_err)?;
+    eprintln!("[key {} -> {}]", mask(client.api_key()), client.base_url());
+    match cli.command {
+        Command::Notebooks { limit, page_size } => {
+            commands::cmd_notebooks(&client, limit, page_size).map_err(gw_err)
+        }
+        Command::Export { book_id, output } => {
+            commands::cmd_export(&client, &book_id, output.as_deref()).map_err(gw_err)
+        }
+        Command::Raw { api_name, params } => {
+            commands::cmd_raw(&client, &api_name, &params).map_err(gw_err)
+        }
+        Command::Apis => commands::cmd_apis(&client).map_err(gw_err),
+    }
+}
