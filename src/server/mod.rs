@@ -11,9 +11,9 @@ pub mod worker;
 
 use anyhow::{Context, Result};
 use clap::Parser as _;
-use std::sync::Arc;
 
-/// 装配并运行服务器（供 bin/weread-notes-server.rs 调用）
+/// 装配并运行服务器（供 bin/weread-notes-server.rs 调用）。
+/// BYOK：此处不加载任何 Key，网关客户端按请求携带的 Key 经注册表解析。
 pub async fn run_server() -> Result<()> {
     let config = config::ServerConfig::parse();
     std::fs::create_dir_all(&config.data_dir)
@@ -23,12 +23,11 @@ pub async fn run_server() -> Result<()> {
         .await
         .context("数据库初始化失败")?;
     let state = state::AppState::new(config.clone(), pool);
-    let gateway = Arc::new(gateway::ThrottledGateway::new(&config)?);
 
-    tokio::spawn(worker::run_worker(state.clone(), gateway.clone()));
+    tokio::spawn(worker::run_worker(state.clone()));
     tokio::spawn(service::run_cleanup_loop(state.clone()));
 
-    let app = routes::build_app_with_cors(state, gateway, &config.cors_origins);
+    let app = routes::build_app_with_cors(state, &config.cors_origins);
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
         .with_context(|| format!("监听 {} 失败", config.bind))?;

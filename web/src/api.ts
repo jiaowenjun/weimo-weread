@@ -12,14 +12,15 @@ import type {
 } from './types';
 
 // 连接配置存 localStorage：默认同源 /api/v1（开发期由 Vite 代理），
-// 也可填完整地址（如 http://192.168.1.10:8081/api/v1，需服务器开 CORS）
+// 也可填完整地址（如 http://192.168.1.10:8081/api/v1，需服务器开 CORS）。
+// BYOK：微信读书 API Key 由用户手动输入，逐请求经 X-Weread-Key 头传给后端。
 const BASE_KEY = 'weread-admin:api-base';
-const TOKEN_KEY = 'weread-admin:token';
+const WEREAD_KEY = 'weread-admin:weread-key';
 
 export const getApiBase = () => localStorage.getItem(BASE_KEY) || '/api/v1';
 export const setApiBase = (v: string) => localStorage.setItem(BASE_KEY, v);
-export const getToken = () => localStorage.getItem(TOKEN_KEY) || '';
-export const setToken = (v: string) => localStorage.setItem(TOKEN_KEY, v);
+export const getWereadKey = () => localStorage.getItem(WEREAD_KEY) || '';
+export const setWereadKey = (v: string) => localStorage.setItem(WEREAD_KEY, v);
 
 export class ApiError extends Error {
   code: string;
@@ -45,8 +46,8 @@ async function parseError(res: Response): Promise<ApiError> {
 }
 
 function authHeaders(): Record<string, string> {
-  const token = getToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  const key = getWereadKey();
+  return key ? { 'X-Weread-Key': key } : {};
 }
 
 export async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -67,20 +68,20 @@ function withRefresh(path: string, refresh?: boolean) {
   return path + (refresh ? '?refresh=true' : '');
 }
 
-/** /healthz 不在 /api/v1 前缀下，不能走 request()（它会再拼一次 base） */
+/** /healthz 不在 /api/v1 前缀下且无需 Key（探活开放） */
 export const health = async () => {
   const origin = getApiBase().replace(/\/api\/v1\/?$/, '').replace(/\/$/, '');
-  const res = await fetch(origin + '/healthz', { headers: authHeaders() });
+  const res = await fetch(origin + '/healthz');
   if (!res.ok) throw await parseError(res);
   return (await res.json()) as { status: string };
 };
 
-/** Markdown 直链（<a download> 无法带 Header，token 经 ?token= 传递，服务端支持） */
+/** Markdown 直链（<a download> 无法带 Header，Key 经 ?key= 传递，服务端支持） */
 export const markdownUrl = (bookId: string, download = false) => {
   const qs = new URLSearchParams();
   if (download) qs.set('download', 'true');
-  const token = getToken();
-  if (token) qs.set('token', token);
+  const key = getWereadKey();
+  if (key) qs.set('key', key);
   const q = qs.toString();
   return `${getApiBase()}/books/${encodeURIComponent(bookId)}/notes/markdown${q ? `?${q}` : ''}`;
 };
@@ -128,10 +129,10 @@ export const api = {
 
   getTask: (taskId: string) => request<TaskView>(`/exports/${taskId}`),
 
-  /** SSE 订阅地址（EventSource 无法设置 Header，token 经 ?token= 查询参数传递） */
+  /** SSE 订阅地址（EventSource 无法设置 Header，Key 经 ?key= 查询参数传递） */
   taskEventsUrl: (taskId: string) => {
-    const token = getToken();
-    const q = token ? `?token=${encodeURIComponent(token)}` : '';
+    const key = getWereadKey();
+    const q = key ? `?key=${encodeURIComponent(key)}` : '';
     return `${getApiBase()}/exports/${encodeURIComponent(taskId)}/events${q}`;
   },
 

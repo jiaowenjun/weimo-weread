@@ -8,11 +8,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{broadcast, watch};
 
 use super::config::ServerConfig;
+use super::gateway::GatewayRegistry;
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: ServerConfig,
     pub pool: SqlitePool,
+    /// BYOK 网关注册表：按请求携带的 Key 解析客户端（全局共享节流）
+    pub registry: Arc<GatewayRegistry>,
     worker_wakeup_tx: watch::Sender<u64>,
     /// 任务进度变更通知（载荷为 task_id），SSE 订阅端按 task_id 过滤
     progress_tx: broadcast::Sender<String>,
@@ -28,9 +31,15 @@ impl AppState {
         let (worker_wakeup_tx, _rx) = watch::channel(0);
         let (progress_tx, _) = broadcast::channel(256);
         static RATE_TABLE: OnceLock<Mutex<HashMap<IpAddr, (u64, u32)>>> = OnceLock::new();
+        let registry = GatewayRegistry::new(
+            &config.gateway_url,
+            config.gateway_timeout_secs,
+            config.gateway_min_interval_ms,
+        );
         Self {
             config,
             pool,
+            registry: Arc::new(registry),
             worker_wakeup_tx,
             progress_tx,
             consecutive_failures: Arc::new(AtomicU32::new(0)),

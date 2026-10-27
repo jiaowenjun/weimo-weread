@@ -21,28 +21,28 @@ export WEREAD_API_KEY=wrk-xxxx          # 获取: https://weread.qq.com/r/weread
 
 ## 使用（服务器 + 管理后台）
 
+**BYOK 模式**：服务器启动不需要（也不读取）任何 Key；微信读书 API Key 由用户在
+前端「连接」处手动输入（存浏览器 localStorage），逐请求经 `X-Weread-Key` 头传给后端
+（SSE / 下载直链走 `?key=` 参数）。不同 Key 的缓存与导出产物按指纹相互隔离。
+
 ```bash
-WEREAD_API_KEY=wrk-xxxx \
-WEREAD_SERVER_BIND=0.0.0.0:8081 \
-WEREAD_SERVER_TOKEN=my-secret \        # 访问鉴权（留空则不启用）
-./target/release/weread-notes-server
+./target/release/weread-notes-server    # 默认 0.0.0.0:8081，无需任何凭据环境变量
 ```
 
 ```bash
 # 同步代理（TTL 缓存，?refresh=true 强制回源）
-curl -H "Authorization: Bearer my-secret" http://127.0.0.1:8081/api/v1/shelf
-curl -H "Authorization: Bearer my-secret" http://127.0.0.1:8081/api/v1/notebooks
-curl -H "Authorization: Bearer my-secret" http://127.0.0.1:8081/api/v1/readdata?mode=overall
+curl -H "X-Weread-Key: wrk-xxxx" http://127.0.0.1:8081/api/v1/shelf
+curl -H "X-Weread-Key: wrk-xxxx" http://127.0.0.1:8081/api/v1/notebooks
+curl -H "X-Weread-Key: wrk-xxxx" http://127.0.0.1:8081/api/v1/readdata?mode=overall
 
 # 异步导出（全部/指定书；单书建议 wait_timeout=30 秒级拿终态）
-curl -X POST -H "Authorization: Bearer my-secret" -H "Content-Type: application/json" \
+curl -X POST -H "X-Weread-Key: wrk-xxxx" -H "Content-Type: application/json" \
      -d '{"book_ids":["3300028061"],"wait_timeout":30}' http://127.0.0.1:8081/api/v1/exports
 
 # 进度（轮询或 SSE）/ 结果 / Markdown
-curl -H "Authorization: Bearer my-secret" http://127.0.0.1:8081/api/v1/exports/{task_id}
-curl -H "Authorization: Bearer my-secret" http://127.0.0.1:8081/api/v1/exports/{task_id}/result
-curl -H "Authorization: Bearer my-secret" -OJ \
-     "http://127.0.0.1:8081/api/v1/books/3300028061/notes/markdown?download=true"
+curl -H "X-Weread-Key: wrk-xxxx" http://127.0.0.1:8081/api/v1/exports/{task_id}
+curl -H "X-Weread-Key: wrk-xxxx" http://127.0.0.1:8081/api/v1/exports/{task_id}/result
+curl -OJ "http://127.0.0.1:8081/api/v1/books/3300028061/notes/markdown?download=true&key=wrk-xxxx"
 ```
 
 管理后台（Vite + React + antd，概览/书架/笔记/导出任务四页面）：
@@ -65,13 +65,12 @@ CLI(weread-notes) ────────────── 共享 lib：client
 
 ## 内置防护
 
-上游 Key 只留服务端（前端只见独立访问 token）；网关调用全局限速（默认 ≥500ms + 抖动）；单 worker 串行；书级失败退避重试（3 次）+ 连续 5 次失败熔断 10 分钟；per-IP 限流（60 req/min）；bookId 白名单字符校验。
+服务器不持有任何默认 Key（BYOK，凭据只经请求传递，本地 SQLite 仅任务表存 Key 供 worker 续跑）；网关调用全局限速（默认 ≥500ms + 抖动，跨所有 Key 共享一把节流锁）；单 worker 串行；书级失败退避重试（3 次）+ 连续 5 次失败熔断 10 分钟；per-IP 限流（60 req/min）；bookId 白名单字符校验；任务/缓存/导出产物按 Key 指纹隔离。
 
 ## 配置（环境变量）
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `WEREAD_API_KEY` | 必填 | 官方网关 Key（wrk- 前缀） |
 | `WEREAD_SERVER_BIND` | 0.0.0.0:8081 | 监听地址 |
 | `WEREAD_SERVER_DATA_DIR` | data | SQLite 目录 |
 | `WEREAD_SERVER_TOKEN` | 空 | 访问鉴权（空=不鉴权） |

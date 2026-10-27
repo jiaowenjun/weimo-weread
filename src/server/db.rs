@@ -1,7 +1,8 @@
 //! SQLite 连接与建表（内嵌 bootstrap SQL，不用 sqlx migrate）。
 //!
-//! 表分两类：cache_entries 可再生（代理缓存）；
-//! books/exports 是长期资产（元数据汇总与导出产物），tasks/export_items 是任务调度状态。
+//! BYOK 模型下存储按 Key 指纹（owner 列 / cache key 前缀）隔离，不同 Key
+//! 的缓存与导出产物互不混淆。表分两类：cache_entries 可再生（代理缓存）；
+//! books/exports 是长期资产，tasks/export_items 是任务调度状态。
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -17,21 +18,24 @@ CREATE TABLE IF NOT EXISTS cache_entries (
 );
 
 CREATE TABLE IF NOT EXISTS books (
-  book_id         TEXT PRIMARY KEY,
-  title           TEXT NOT NULL DEFAULT '',
-  author          TEXT NOT NULL DEFAULT '',
-  cover           TEXT NOT NULL DEFAULT '',
-  progress        INTEGER,
-  finish_reading  INTEGER NOT NULL DEFAULT 0,
+  owner          TEXT NOT NULL,
+  book_id        TEXT NOT NULL,
+  title          TEXT NOT NULL DEFAULT '',
+  author         TEXT NOT NULL DEFAULT '',
+  cover          TEXT NOT NULL DEFAULT '',
+  progress       INTEGER,
+  finish_reading INTEGER NOT NULL DEFAULT 0,
   read_update_time INTEGER,
-  bookmark_count  INTEGER,
-  note_count      INTEGER,
-  review_count    INTEGER,
-  updated_ms      INTEGER NOT NULL
+  bookmark_count INTEGER,
+  note_count     INTEGER,
+  review_count   INTEGER,
+  updated_ms     INTEGER NOT NULL,
+  PRIMARY KEY (owner, book_id)
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
   task_id      TEXT PRIMARY KEY,
+  api_key      TEXT NOT NULL DEFAULT '',
   request_json TEXT NOT NULL,
   status       TEXT NOT NULL DEFAULT 'queued',
   items_count  INTEGER NOT NULL DEFAULT 0,
@@ -56,12 +60,14 @@ CREATE TABLE IF NOT EXISTS export_items (
 );
 
 CREATE TABLE IF NOT EXISTS exports (
-  book_id     TEXT PRIMARY KEY,
+  owner       TEXT NOT NULL,
+  book_id     TEXT NOT NULL,
   markdown    TEXT NOT NULL,
   book_json   TEXT NOT NULL,
   bookmarks   INTEGER NOT NULL DEFAULT 0,
   reviews     INTEGER NOT NULL DEFAULT 0,
-  exported_ms INTEGER NOT NULL
+  exported_ms INTEGER NOT NULL,
+  PRIMARY KEY (owner, book_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_export_items_due ON export_items(state, next_sync_ms);
@@ -79,6 +85,18 @@ pub async fn connect(db_path: &std::path::Path) -> Result<SqlitePool> {
         .await
         .with_context(|| format!("连接数据库失败: {}", db_path.display()))?;
 
+    // v0.1 早期库没有 owner/api_key 列（BYOK 前的单用户 schema）：
+    // 检测到即整体重建——缓存与导出产物可再生，重建代价可接受
+    if needs_rebuild(&pool).await? {
+        tracing::warn!("检测到旧版单用户库，重建表结构（缓存/导出数据将重新生成）");
+        for table in ["exports", "books", "export_items", "tasks", "cache_entries"] {
+            sqlx::query(&format!("DROP TABLE IF EXISTS {table}"))
+                .execute(&pool)
+                .await
+                .context("旧表清理失败")?;
+        }
+    }
+
     for statement in BOOTSTRAP_SCHEMA
         .split(';')
         .map(str::trim)
@@ -90,4 +108,20 @@ pub async fn connect(db_path: &std::path::Path) -> Result<SqlitePool> {
             .with_context(|| format!("建表失败: {statement}"))?;
     }
     Ok(pool)
+}
+
+async fn needs_rebuild(pool: &SqlitePool) -> Result<bool> {
+    let has_owner: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('exports') WHERE name = 'owner'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    let has_api_key: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name = 'api_key'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    Ok(has_owner == 0 || has_api_key == 0)
 }

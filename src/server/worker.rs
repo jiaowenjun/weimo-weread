@@ -1,12 +1,11 @@
 //! 导出 worker——DB 即队列，单 worker 串行。
 //!
-//! 网关侧全局限速由 ThrottledGateway 统一保证（代理端点与 worker 共享），
-//! worker 自身不再额外休眠；重试/熔断策略见设计文档第 8 节。
+//! BYOK：每本书所属任务记录了创建者的 API Key，worker 经 AppState 的
+//! GatewayRegistry 按 Key 解析网关客户端；节流锁全局共享（跨所有 Key）。
 
 use anyhow::{Context, Result};
 use rand::Rng;
 use sqlx::{Row, SqlitePool};
-use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -25,9 +24,10 @@ pub(super) struct DueItem {
     task_id: String,
     book_id: String,
     attempts: i64,
+    api_key: String,
 }
 
-pub async fn run_worker<G: GatewayApi>(state: AppState, gw: Arc<G>) {
+pub async fn run_worker(state: AppState) {
     let mut wakeup = state.worker_wakeup_receiver();
     loop {
         // 熔断期间不抓取，等冷却结束（分段等待，最长 60s 一段）
@@ -37,7 +37,7 @@ pub async fn run_worker<G: GatewayApi>(state: AppState, gw: Arc<G>) {
             continue;
         }
 
-        match process_next_due(&state, gw.as_ref()).await {
+        match process_next_due(&state).await {
             Ok(true) => {} // 处理了一本书，立即取下一本
             Ok(false) => {
                 tokio::select! {
@@ -60,10 +60,10 @@ pub async fn run_worker<G: GatewayApi>(state: AppState, gw: Arc<G>) {
 
 /// 处理一本到期书（导出 + 状态推进）。返回是否处理了；
 /// 供 run_worker 循环与测试复用（测试可直接驱动而无需起后台 worker）。
-pub async fn process_next_due<G: GatewayApi>(state: &AppState, gw: &G) -> Result<bool> {
+pub async fn process_next_due(state: &AppState) -> Result<bool> {
     match pick_due_item(&state.pool).await? {
         Some(item) => {
-            export_item(state, gw, &item).await?;
+            export_item(state, &item).await?;
             Ok(true)
         }
         None => Ok(false),
@@ -73,10 +73,11 @@ pub async fn process_next_due<G: GatewayApi>(state: &AppState, gw: &G) -> Result
 async fn pick_due_item(pool: &SqlitePool) -> Result<Option<DueItem>> {
     // 含 running：进程重启后中断的书直接重试（重抓单书成本低，无需断点）
     let row = sqlx::query(
-        "SELECT task_id, book_id, attempts FROM export_items
-         WHERE state IN ('waiting','running')
-           AND (next_sync_ms IS NULL OR next_sync_ms <= ?)
-         ORDER BY updated_ms ASC, rowid ASC
+        "SELECT ei.task_id, ei.book_id, ei.attempts, t.api_key
+         FROM export_items ei JOIN tasks t ON t.task_id = ei.task_id
+         WHERE ei.state IN ('waiting','running')
+           AND (ei.next_sync_ms IS NULL OR ei.next_sync_ms <= ?)
+         ORDER BY ei.updated_ms ASC, ei.rowid ASC
          LIMIT 1",
     )
     .bind(ServerConfig::now_ms())
@@ -88,10 +89,11 @@ async fn pick_due_item(pool: &SqlitePool) -> Result<Option<DueItem>> {
         task_id: r.get("task_id"),
         book_id: r.get("book_id"),
         attempts: r.get("attempts"),
+        api_key: r.get("api_key"),
     }))
 }
 
-async fn export_item<G: GatewayApi>(state: &AppState, gw: &G, item: &DueItem) -> Result<()> {
+async fn export_item(state: &AppState, item: &DueItem) -> Result<()> {
     let now = ServerConfig::now_ms();
 
     sqlx::query(
@@ -115,7 +117,19 @@ async fn export_item<G: GatewayApi>(state: &AppState, gw: &G, item: &DueItem) ->
     .await
     .context("标记任务 running 失败")?;
 
-    match export_book_once(state, gw, &item.book_id).await {
+    // 按任务归属的 Key 解析网关（旧任务缺 Key 直接终态失败）
+    let gateway = if item.api_key.is_empty() {
+        None
+    } else {
+        state.registry.for_key(&item.api_key).ok()
+    };
+
+    let outcome = match gateway.as_deref() {
+        Some(gw) => export_book_once(state, gw, &item.api_key, &item.book_id).await,
+        None => Err(GatewayError::Io("任务缺少有效的 API Key（旧版任务请重建）".into())),
+    };
+
+    match outcome {
         Ok((bookmarks, reviews)) => {
             state.record_crawl_success();
             sqlx::query(
@@ -146,12 +160,14 @@ async fn export_item<G: GatewayApi>(state: &AppState, gw: &G, item: &DueItem) ->
     Ok(())
 }
 
-/// 抓取并生成单书 Markdown，写入 exports 表（INSERT OR REPLACE 语义）。
-async fn export_book_once<G: GatewayApi>(
+/// 抓取并生成单书 Markdown，写入 exports 表（按 Key 指纹隔离）。
+async fn export_book_once(
     state: &AppState,
-    gw: &G,
+    gw: &dyn GatewayApi,
+    api_key: &str,
     book_id: &str,
 ) -> Result<(i64, i64), GatewayError> {
+    let owner = service::key_fp(api_key);
     let detail = fetch::fetch_note_detail(gw, book_id).await?;
     let mut book = detail.book;
     let need_fallback = book
@@ -191,13 +207,14 @@ async fn export_book_once<G: GatewayApi>(
     let now = ServerConfig::now_ms();
     let book_json = serde_json::to_string(&book).unwrap_or_else(|_| "{}".into());
     sqlx::query(
-        "INSERT INTO exports (book_id, markdown, book_json, bookmarks, reviews, exported_ms)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(book_id) DO UPDATE SET
+        "INSERT INTO exports (owner, book_id, markdown, book_json, bookmarks, reviews, exported_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(owner, book_id) DO UPDATE SET
             markdown=excluded.markdown, book_json=excluded.book_json,
             bookmarks=excluded.bookmarks, reviews=excluded.reviews,
             exported_ms=excluded.exported_ms",
     )
+    .bind(&owner)
     .bind(book_id)
     .bind(&md)
     .bind(&book_json)
@@ -209,13 +226,16 @@ async fn export_book_once<G: GatewayApi>(
     .map_err(|e| GatewayError::Io(format!("写入 exports 表失败: {e}")))?;
 
     // best-effort 更新 books 表计数
-    let _ = sqlx::query("UPDATE books SET bookmark_count=?, review_count=?, updated_ms=? WHERE book_id=?")
-        .bind(bm_count)
-        .bind(rv_count)
-        .bind(now)
-        .bind(book_id)
-        .execute(&state.pool)
-        .await;
+    let _ = sqlx::query(
+        "UPDATE books SET bookmark_count=?, review_count=?, updated_ms=? WHERE owner=? AND book_id=?",
+    )
+    .bind(bm_count)
+    .bind(rv_count)
+    .bind(now)
+    .bind(&owner)
+    .bind(book_id)
+    .execute(&state.pool)
+    .await;
 
     Ok((bm_count, rv_count))
 }

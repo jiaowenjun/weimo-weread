@@ -163,10 +163,10 @@ export interface ResultView {
 export interface ServerInfo {
   name: string;
   version: string;
+  key_mode: string;
   gateway: {
     base_url: string;
     skill_version: string;
-    api_key: string;
     min_interval_ms: number;
   };
   cache: { ttl_seconds: number };
@@ -182,5 +182,4 @@ export interface ServerInfo {
     open: boolean;
     remaining_ms: number;
   };
-  auth_enabled: boolean;
 }

@@ -79,11 +79,16 @@ douban-api 的架构是围绕「慢速 HTML 爬虫」设计的；weread 的上�
 
 ## 2. 核心设计决策
 
-### D1：单用户 + 两层凭据模型
+### D1：~~单用户 + 两层凭据模型~~ → **BYOK（2026-10-27 变更，按用户要求）**
 
-- 上游 `WEREAD_API_KEY` 只配在服务端（环境变量/参数），启动时 fail-fast 缺失即退出
-- 对外的访问鉴权是**另一个独立 token**（`WEREAD_SERVER_TOKEN`，可选），与上游 Key 完全分离
-- 数据库所有表**不含 uid 列**（对比 douban 的 uid 维度）；未来多 Key 支持时再加 `profile` 列，v1 明确不做
+原设计：上游 `WEREAD_API_KEY` 配在服务端 + 独立访问 token `WEREAD_SERVER_TOKEN` 两层分离。
+
+**现实现**：前端必填微信读书 Key（手动输入，存浏览器 localStorage），逐请求经 `X-Weread-Key` 头（SSE/下载直链走 `?key=`）传给后端；**服务器不读取任何默认 Key**，启动零凭据。配套改造：
+
+- `GatewayRegistry` 按 Key 解析并缓存网关客户端；节流锁全局共享（跨所有 Key 恒低速）
+- 存储按 Key 指纹（sha256 前 8 hex）隔离：cache key 前缀、books/exports 复合主键 (owner, book_id)
+- tasks 表存原始 Key（本地个人工具可接受）供 worker 续跑；任务查询/删除按 Key 过滤
+- 单用户假设弱化为「同时可能多 Key」——数据隔离已处理，限流/熔断仍全局
 
 ### D2：混合模型——同步代理 + 异步导出（本方案与 douban 最大的分野）
 
@@ -342,12 +347,13 @@ POST /exports ──▶ queued ──(全部书命中缓存)──▶ completed
 
 上游业务错误**不吞**：errcode 与 message 原样附在 502 响应体里，便于排查。
 
-## 10. 认证与安全
+## 10. 认证与安全（2026-10-27 起 BYOK）
 
-- **两层凭据**：上游 `WEREAD_API_KEY`（服务端持有，绝不透出）；访问 `WEREAD_SERVER_TOKEN`（可选，默认无鉴权便于本地使用；Bearer 头 + SSE `?token=` 兜底，douban 同款）
-- 上游 Key 缺失：启动即失败（fail fast）——本服务没有 Key 没有意义
-- `/server/info` 不回显 Key，只回显掩码（`wrk-abcd...wxyz`）与连通性状态
-- `POST /gateway/call` 是逃生门：**只读代理**——请求体校验 api_name 非空即可透传（官方网关本身全只读，无写接口可滥用）；公网部署时建议开启 token
+- **凭据 = 微信读书 API Key 本身**：所有 `/api/v1` 端点要求 `X-Weread-Key` 头或 `?key=` 参数（EventSource / 下载直链兜底）；缺失 401，响应体附获取页面引导
+- **服务器零默认凭据**：不读任何环境变量 Key，启动无需配置；Key 只活在请求与浏览器 localStorage
+- tasks 表存原始 Key 供 worker 异步续跑（本地 SQLite，与 `~/.zshrc` 同信任域）；cache/books/exports 只存指纹
+- Key 有效性不做事前校验——首次网关调用时由官方网关判定（errcode -2013 映射 502）
+- `POST /gateway/call` 逃生门透传任意只读调用；公网部署需自行评估（任何人都能用自己的 Key 使用本服务）
 - CORS：默认关闭，`WEREAD_SERVER_CORS_ORIGINS` 配置
 
 ## 11. 前端设计（web/）
@@ -453,3 +459,4 @@ douban 同款——全进程内，无 testcontainer：
 5. **upgrade 识别层级**：`upgrade_info` 判定在真实 client 的 `parse_response` 里，FakeGateway 绕过协议层——集成测试直接以 `GatewayError::Upgrade` 模拟 client 已识别出的阻断
 6. **CORS**：`build_app_with_cors` 在基础 router 上叠加 CorsLayer（范本 douban 实现中该配置实际未生效，此处修正）
 7. **真机冒烟（2026-10-27）**：假 Key 启动 → healthz/鉴权/server/info 正常；`/shelf` 打通真实网关并正确映射官方 `errcode -2013 鉴权失败` 为 502 信封——协议链路端到端验证通过
+8. **BYOK 变更（2026-10-27 当日，按用户要求）**：D1 两层凭据模型改为前端手输 Key 逐请求传递（`X-Weread-Key` / `?key=`）；`GatewayApi` trait 转 async_trait 支持动态分发；`GatewayRegistry` 按 Key 建客户端（共享全局节流锁）；存储加 owner 指纹隔离（旧库检测到无 owner/api_key 列自动整体重建）；25 个集成测试同步改造并通过；真实 Key 经头/参数两条路径均验证打网关成功

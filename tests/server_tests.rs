@@ -17,6 +17,9 @@ use weread_notes::server::worker;
 // FakeGateway
 // --------------------------------------------------------------------------- //
 
+/// 注入 fake 的测试 Key（请求头 X-Weread-Key）
+const TEST_KEY: &str = "wrk-test-key";
+
 struct FakeGateway {
     handler: Box<dyn Fn(&str, &Value) -> Result<Value, GatewayError> + Send + Sync>,
     calls: Mutex<Vec<String>>,
@@ -43,6 +46,7 @@ impl FakeGateway {
     }
 }
 
+#[async_trait::async_trait]
 impl GatewayApi for FakeGateway {
     async fn call(&self, api_name: &str, params: Value) -> Result<Value, GatewayError> {
         self.calls.lock().unwrap().push(api_name.to_string());
@@ -127,12 +131,10 @@ struct TestApp {
     _dir: tempfile::TempDir,
 }
 
-fn test_config(dir: &std::path::Path, token: &str) -> ServerConfig {
+fn test_config(dir: &std::path::Path) -> ServerConfig {
     ServerConfig {
         bind: "127.0.0.1:0".into(),
         data_dir: dir.to_path_buf(),
-        api_key: "wrk-test-key-000000000000".into(),
-        token: token.into(),
         gateway_url: "http://fake-gateway".into(),
         gateway_timeout_secs: 5,
         cors_origins: "".into(),
@@ -148,19 +150,21 @@ fn test_config(dir: &std::path::Path, token: &str) -> ServerConfig {
 }
 
 async fn setup() -> TestApp {
-    setup_with(fake_ok, "").await
+    setup_with(fake_ok).await
 }
 
-async fn setup_with<F>(handler: F, token: &str) -> TestApp
+async fn setup_with<F>(handler: F) -> TestApp
 where
     F: Fn(&str, &Value) -> Result<Value, GatewayError> + Send + Sync + 'static,
 {
     let dir = tempfile::tempdir().unwrap();
     let pool = db::connect(&dir.path().join("test.db")).await.unwrap();
-    let config = test_config(dir.path(), token);
+    let config = test_config(dir.path());
     let state = AppState::new(config, pool);
     let gw = Arc::new(FakeGateway::new(handler));
-    let app = build_app(state.clone(), gw.clone());
+    // BYOK 注入：请求携带 X-Weread-Key: <TEST_KEY> 时命中 fake
+    state.registry.set(TEST_KEY, gw.clone());
+    let app = build_app(state.clone());
     TestApp { app, state, gw, _dir: dir }
 }
 
@@ -168,17 +172,26 @@ fn req(method: &str, uri: &str) -> Request<Body> {
     Request::builder()
         .method(method)
         .uri(uri)
+        .header("x-weread-key", TEST_KEY)
         .body(Body::empty())
         .unwrap()
 }
 
-fn req_json(method: &str, uri: &str, auth: &str, body: Value) -> Request<Body> {
+fn req_json(method: &str, uri: &str, body: Value) -> Request<Body> {
     Request::builder()
         .method(method)
         .uri(uri)
-        .header(header::AUTHORIZATION, auth)
+        .header("x-weread-key", TEST_KEY)
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn req_nokey(method: &str, uri: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(Body::empty())
         .unwrap()
 }
 
@@ -194,14 +207,14 @@ async fn body_text(resp: axum::response::Response) -> String {
 
 /// 驱动 worker 直至队列排空（测试不起后台 worker，直接同步驱动）
 async fn drain_worker(t: &TestApp) {
-    while worker::process_next_due(&t.state, t.gw.as_ref()).await.unwrap() {}
+    while worker::process_next_due(&t.state).await.unwrap() {}
 }
 
 async fn create_export(t: &TestApp, body: Value) -> (StatusCode, Value) {
     let resp = t
         .app
         .clone()
-        .oneshot(req_json("POST", "/api/v1/exports", "", body))
+        .oneshot(req_json("POST", "/api/v1/exports", body))
         .await
         .unwrap();
     let status = resp.status();
@@ -220,35 +233,43 @@ async fn healthz_ok_without_auth() {
 }
 
 #[tokio::test]
-async fn auth_token_enforced() {
-    let t = setup_with(fake_ok, "secret").await;
-    // 无 token → 401
-    let resp = t.app.clone().oneshot(req("GET", "/api/v1/shelf")).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    // 错误 token → 401
+async fn weread_key_enforced() {
+    let t = setup().await;
+    // 无 Key → 401
     let resp = t
         .app
         .clone()
-        .oneshot(req_json("GET", "/api/v1/shelf", "Bearer wrong", json!({})))
+        .oneshot(req_nokey("GET", "/api/v1/shelf"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    // 正确 Bearer → 200
+    let v = body_json(resp).await;
+    assert_eq!(v["error"]["code"], json!("UNAUTHORIZED"));
+
+    // ?key= 查询参数兜底（EventSource / 下载直链场景）→ 200
     let resp = t
         .app
         .clone()
-        .oneshot(req_json("GET", "/api/v1/shelf", "Bearer secret", json!({})))
+        .oneshot(req_nokey("GET", &format!("/api/v1/shelf?key={TEST_KEY}")))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    // ?token= 查询参数兜底（EventSource 场景）→ 200
+
+    // 其他 Key 未注入 fake：注册表为其建真实客户端打假地址 → 网络错误 502，
+    // 证明网关客户端按 Key 解析、互不影响
     let resp = t
         .app
         .clone()
-        .oneshot(req("GET", "/api/v1/shelf?token=secret"))
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/shelf")
+                .header("x-weread-key", "wrk-other-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
 }
 
 // --------------------------------------------------------------------------- //
@@ -407,7 +428,6 @@ async fn gateway_call_passthrough() {
         .oneshot(req_json(
             "POST",
             "/api/v1/gateway/call",
-            "",
             json!({"api_name": "/book/getprogress", "params": {"bookId": "B1"}}),
         ))
         .await
@@ -419,7 +439,7 @@ async fn gateway_call_passthrough() {
     let resp = t
         .app
         .clone()
-        .oneshot(req_json("POST", "/api/v1/gateway/call", "", json!({"api_name": "  "})))
+        .oneshot(req_json("POST", "/api/v1/gateway/call", json!({"api_name": "  "})))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -431,15 +451,12 @@ async fn gateway_call_passthrough() {
 
 #[tokio::test]
 async fn upstream_api_error_maps_502() {
-    let t = setup_with(
-        |api, _| {
-            Err(GatewayError::Api {
-                errcode: "-201014".into(),
-                message: "无效的 bookId".into(),
-            })
-        },
-        "",
-    )
+    let t = setup_with(|_, _| {
+        Err(GatewayError::Api {
+            errcode: "-201014".into(),
+            message: "无效的 bookId".into(),
+        })
+    })
     .await;
     let resp = t.app.clone().oneshot(req("GET", "/api/v1/shelf")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
@@ -452,11 +469,7 @@ async fn upstream_api_error_maps_502() {
 async fn skill_upgrade_maps_503() {
     // upgrade_info 的识别在真实 client 的 parse_response 里（fake 绕过协议层），
     // 这里直接以 GatewayError::Upgrade 模拟 client 已识别出的升级阻断
-    let t = setup_with(
-        |_, _| Err(GatewayError::Upgrade("请升级 skill 到 1.1.0".into())),
-        "",
-    )
-    .await;
+    let t = setup_with(|_, _| Err(GatewayError::Upgrade("请升级 skill 到 1.1.0".into()))).await;
     let resp = t.app.clone().oneshot(req("GET", "/api/v1/shelf")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     let v = body_json(resp).await;
@@ -478,14 +491,18 @@ async fn upstream_failure_falls_back_to_stale_cache() {
         .await
         .unwrap();
 
-    // 构造一个网关故障的副本 app：直接复用 state（共享 DB 与缓存）
-    let broken = Arc::new(FakeGateway::new(|_, _| {
-        Err(GatewayError::Network {
-            message: "boom".into(),
-            attempts: 3,
-        })
-    }));
-    let app2 = build_app(t.state.clone(), broken);
+    // 构造一个网关故障的副本 app：直接复用 state（共享 DB 与缓存），
+    // 覆盖注册表里该 Key 的网关实现
+    t.state.registry.set(
+        TEST_KEY,
+        Arc::new(FakeGateway::new(|_, _| {
+            Err(GatewayError::Network {
+                message: "boom".into(),
+                attempts: 3,
+            })
+        })),
+    );
+    let app2 = build_app(t.state.clone());
     let resp = app2.oneshot(req("GET", "/api/v1/shelf")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let v = body_json(resp).await;
@@ -562,11 +579,14 @@ async fn export_single_book_then_markdown_available() {
     assert!(text.contains("想法一"));
     assert!(text.contains("《书B1》"));
 
-    // 下载模式带 Content-Disposition
+    // 下载模式带 Content-Disposition（经 ?key= 直链鉴权，模拟 <a download>）
     let resp = t
         .app
         .clone()
-        .oneshot(req("GET", "/api/v1/books/B1/notes/markdown?download=true"))
+        .oneshot(req_nokey(
+            "GET",
+            &format!("/api/v1/books/B1/notes/markdown?download=true&key={TEST_KEY}"),
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -631,7 +651,6 @@ async fn partial_when_one_book_fails_permanently() {
             }
             fake_ok(api, params)
         },
-        "",
     )
     .await;
 
@@ -682,7 +701,6 @@ async fn transient_error_backs_off_then_succeeds() {
             }
             fake_ok(api, params)
         },
-        "",
     )
     .await;
 
@@ -846,9 +864,8 @@ async fn server_info_shape() {
     assert_eq!(resp.status(), StatusCode::OK);
     let v = body_json(resp).await;
     assert_eq!(v["name"], json!("weread-notes-server"));
+    assert_eq!(v["key_mode"], json!("byok"));
     assert_eq!(v["gateway"]["skill_version"], json!("1.0.5"));
-    // Key 只回掩码，不泄露
-    let key = v["gateway"]["api_key"].as_str().unwrap();
-    assert!(key.contains("..."));
-    assert!(!key.contains("wrk-test-key-000000000000"));
+    // BYOK：服务端不持有 Key，info 不回显任何 Key 信息
+    assert!(v["gateway"].get("api_key").is_none());
 }

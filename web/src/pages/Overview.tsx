@@ -49,8 +49,11 @@ export default function Overview() {
     }
     try {
       setInfo(await api.serverInfo());
-    } catch {
-      /* healthz 通而 API 报错时在卡片里显示空值即可 */
+    } catch (e) {
+      // BYOK：未配置微信读书 Key 时给出明确引导，而非静默空卡片
+      if ((e as { code?: string }).code === 'UNAUTHORIZED') {
+        setConnError('未配置微信读书 API Key：点击右上角「连接」填写（获取: https://weread.qq.com/r/weread-skills）');
+      }
     }
     try {
       const res = await api.listTasks({ limit: 5 });

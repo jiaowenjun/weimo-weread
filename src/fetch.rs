@@ -29,8 +29,8 @@ pub struct NotebooksResult {
 }
 
 /// 翻页拉全 /user/notebooks(游标为最后一条的 sort 字段)。
-pub async fn fetch_notebooks<G: GatewayApi>(
-    gw: &G,
+pub async fn fetch_notebooks(
+    gw: &dyn GatewayApi,
     count: u64,
 ) -> Result<NotebooksResult, GatewayError> {
     let mut result = NotebooksResult::default();
@@ -69,8 +69,8 @@ pub struct NoteDetail {
 }
 
 /// 一次 /book/bookmarklist 拿全: 划线列表(updated) + 章节表(chapters) + 书籍信息(book)。
-pub async fn fetch_note_detail<G: GatewayApi>(
-    gw: &G,
+pub async fn fetch_note_detail(
+    gw: &dyn GatewayApi,
     book_id: &str,
 ) -> Result<NoteDetail, GatewayError> {
     let data = gw.call("/book/bookmarklist", json!({ "bookId": book_id })).await?;
@@ -102,8 +102,8 @@ pub async fn fetch_note_detail<G: GatewayApi>(
 
 /// 我的想法(/review/list/mine, 注意参数是小写 bookid), synckey 翻页。
 /// 失败是否容忍由调用方决定(CLI 与 worker 均降级为空列表并告警)。
-pub async fn fetch_my_reviews<G: GatewayApi>(
-    gw: &G,
+pub async fn fetch_my_reviews(
+    gw: &dyn GatewayApi,
     book_id: &str,
 ) -> Result<Vec<Value>, GatewayError> {
     let mut reviews = Vec::new();

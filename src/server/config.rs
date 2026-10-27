@@ -1,7 +1,7 @@
 //! 服务器配置——全部经 clap 参数 + 环境变量。
 //!
-//! 注意两层凭据分离：`api_key` 是上游网关 Key（服务端持有），
-//! `token` 是本服务的访问鉴权 Token（前端用），二者独立。
+//! BYOK 模型：服务器不持有任何默认凭据。微信读书 API Key 由前端
+//! 逐请求携带（`X-Weread-Key` 头 / `?key=` 参数），此处只保留网络与存储配置。
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -16,14 +16,6 @@ pub struct ServerConfig {
     /// 数据目录（SQLite 数据库）
     #[arg(long, env = "WEREAD_SERVER_DATA_DIR", default_value = "data")]
     pub data_dir: PathBuf,
-
-    /// 微信读书 API Key（wrk- 前缀；服务端持有，不透出给前端）
-    #[arg(long, env = "WEREAD_API_KEY")]
-    pub api_key: String,
-
-    /// 访问鉴权 Token（留空则不启用鉴权）
-    #[arg(long, env = "WEREAD_SERVER_TOKEN", default_value = "")]
-    pub token: String,
 
     /// 网关地址（调试用）
     #[arg(long, env = "WEREAD_GATEWAY_URL", default_value = "https://i.weread.qq.com/api/agent/gateway")]
@@ -41,7 +33,7 @@ pub struct ServerConfig {
     #[arg(long, env = "WEREAD_CACHE_TTL_SECS", default_value_t = 3600)]
     pub cache_ttl_secs: i64,
 
-    /// 网关最小调用间隔（毫秒）——全局限速，官方限额未知取保守值
+    /// 网关最小调用间隔（毫秒）——全局限速（跨所有 Key），官方限额未知取保守值
     #[arg(long, env = "WEREAD_GATEWAY_MIN_INTERVAL_MS", default_value_t = 500)]
     pub gateway_min_interval_ms: u64,
 

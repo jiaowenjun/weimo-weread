@@ -1,13 +1,15 @@
-//! HTTP 路由与中间件（鉴权、客户端限流、CORS）。
+//! HTTP 路由与中间件（Key 鉴权、客户端限流、CORS）。
+//!
+//! BYOK：所有 `/api/v1` 端点要求微信读书 API Key——`X-Weread-Key` 请求头
+//! 或 `?key=` 查询参数（EventSource / 下载直链场景）。服务器不持有任何默认 Key。
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{ConnectInfo, Path, Query, State},
+    extract::{ConnectInfo, Extension, Path, Query, State},
     http::{StatusCode, header},
     middleware::{self, Next},
     response::{
@@ -18,15 +20,15 @@ use axum::{
 };
 use serde_json::{Value, json};
 
-use crate::client::GatewayApi;
-
 use super::error::{AppError, AppResult};
 use super::service::{self, TERMINAL_STATUSES, TaskView};
 use super::state::AppState;
 
-type SharedState<G> = (AppState, Arc<G>);
+/// 中间件解析出的请求级 API Key
+#[derive(Clone)]
+pub struct WereadKey(pub String);
 
-pub fn build_app<G: GatewayApi + 'static>(state: AppState, gateway: Arc<G>) -> Router {
+pub fn build_app(state: AppState) -> Router {
     let api = Router::new()
         // 同步代理
         .route("/shelf", get(get_shelf))
@@ -47,26 +49,24 @@ pub fn build_app<G: GatewayApi + 'static>(state: AppState, gateway: Arc<G>) -> R
         .route("/exports/{task_id}/events", get(get_export_events))
         // 系统
         .route("/server/info", get(server_info))
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            key_middleware,
+        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit_middleware,
         ))
-        .with_state((state, gateway));
+        .with_state(state);
 
-    let app = Router::new()
+    Router::new()
         .route("/healthz", get(healthz))
-        .nest("/api/v1", api);
-    app
+        .nest("/api/v1", api)
 }
 
-/// 在 build_app 基础上按配置叠加 CORS（origins 为空则不加）。
-pub fn build_app_with_cors<G: GatewayApi + 'static>(
-    state: AppState,
-    gateway: Arc<G>,
-    cors_origins: &str,
-) -> Router {
-    let app = build_app(state, gateway);
+/// 在基础 router 上按配置叠加 CORS（origins 为空则不加）。
+pub fn build_app_with_cors(state: AppState, cors_origins: &str) -> Router {
+    let app = build_app(state);
     if cors_origins.trim().is_empty() {
         return app;
     }
@@ -85,40 +85,43 @@ pub fn build_app_with_cors<G: GatewayApi + 'static>(
 // 中间件
 // --------------------------------------------------------------------------- //
 
-async fn auth_middleware(
-    State(state): State<AppState>,
-    req: axum::http::Request<axum::body::Body>,
+async fn key_middleware(
+    State(_state): State<AppState>,
+    mut req: axum::http::Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, AppError> {
-    if !state.config.token.is_empty() {
-        let expected = format!("Bearer {}", state.config.token);
-        let header_ok = req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v == expected);
-        // 浏览器 EventSource 无法设置自定义 Header，允许 ?token= 查询参数兜底
-        let query_ok = !header_ok
-            && req
-                .uri()
+    // 头优先；EventSource / <a download> 无法设头，允许 ?key= 查询参数兜底
+    let key = req
+        .headers()
+        .get("x-weread-key")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| {
+            req.uri()
                 .query()
-                .is_some_and(|q| {
-                    q.split('&').any(|kv| {
-                        kv.split_once('=').is_some_and(|(k, v)| {
-                            k == "token" && urldecode(v) == state.config.token
+                .and_then(|q| {
+                    q.split('&').find_map(|kv| {
+                        kv.split_once('=').and_then(|(k, v)| {
+                            (k == "key").then(|| urldecode(v))
                         })
                     })
-                });
-        if !header_ok && !query_ok {
-            return Err(AppError::Unauthorized(
-                "缺少或错误的 Bearer Token（支持 Authorization 头或 ?token= 参数）".to_string(),
-            ));
-        }
-    }
+                })
+                .map(|v| v.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+
+    let key = key.ok_or_else(|| {
+        AppError::Unauthorized(
+            "缺少微信读书 API Key（X-Weread-Key 头或 ?key= 参数）。获取页面: https://weread.qq.com/r/weread-skills".to_string(),
+        )
+    })?;
+    req.extensions_mut().insert(WereadKey(key));
     Ok(next.run(req).await)
 }
 
-/// 极简百分号解码（token 一般为 URL 安全字符，覆盖 %+XX 即可）
+/// 极简百分号解码（Key 一般为 URL 安全字符，覆盖 %+XX 即可）
 fn urldecode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -168,9 +171,7 @@ async fn healthz() -> Json<Value> {
     Json(json!({"status": "ok"}))
 }
 
-async fn server_info<G: GatewayApi>(
-    State((state, _)): State<SharedState<G>>,
-) -> AppResult<Json<Value>> {
+async fn server_info(State(state): State<AppState>) -> AppResult<Json<Value>> {
     Ok(Json(service::server_info(&state).await?))
 }
 
@@ -187,55 +188,85 @@ fn refresh_of(q: &RefreshQuery) -> bool {
 // 同步代理端点
 // --------------------------------------------------------------------------- //
 
-async fn get_shelf<G: GatewayApi>(
-    State((state, gw)): State<SharedState<G>>,
+async fn get_shelf(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Query(q): Query<RefreshQuery>,
 ) -> AppResult<Json<Value>> {
-    let p = service::proxy_shelf(&state, gw.as_ref(), refresh_of(&q)).await?;
+    let gw = state
+        .registry
+        .for_key(&key)
+        .map_err(AppError::from)?;
+    let p = service::proxy_shelf(&state, gw.as_ref(), &key, refresh_of(&q)).await?;
     Ok(Json(service::envelope(&p)))
 }
 
-async fn get_notebooks<G: GatewayApi>(
-    State((state, gw)): State<SharedState<G>>,
+async fn get_notebooks(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Query(q): Query<RefreshQuery>,
 ) -> AppResult<Json<Value>> {
-    let p = service::proxy_notebooks(&state, gw.as_ref(), refresh_of(&q)).await?;
+    let gw = state
+        .registry
+        .for_key(&key)
+        .map_err(AppError::from)?;
+    let p = service::proxy_notebooks(&state, gw.as_ref(), &key, refresh_of(&q)).await?;
     Ok(Json(service::envelope(&p)))
 }
 
-async fn get_book_info<G: GatewayApi>(
-    State((state, gw)): State<SharedState<G>>,
+async fn get_book_info(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Path(book_id): Path<String>,
     Query(q): Query<RefreshQuery>,
 ) -> AppResult<Json<Value>> {
-    let p = service::proxy_book_info(&state, gw.as_ref(), &book_id, refresh_of(&q)).await?;
+    let gw = state
+        .registry
+        .for_key(&key)
+        .map_err(AppError::from)?;
+    let p = service::proxy_book_info(&state, gw.as_ref(), &key, &book_id, refresh_of(&q)).await?;
     Ok(Json(service::envelope(&p)))
 }
 
-async fn get_book_chapters<G: GatewayApi>(
-    State((state, gw)): State<SharedState<G>>,
+async fn get_book_chapters(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Path(book_id): Path<String>,
     Query(q): Query<RefreshQuery>,
 ) -> AppResult<Json<Value>> {
-    let p = service::proxy_book_chapters(&state, gw.as_ref(), &book_id, refresh_of(&q)).await?;
+    let gw = state
+        .registry
+        .for_key(&key)
+        .map_err(AppError::from)?;
+    let p = service::proxy_book_chapters(&state, gw.as_ref(), &key, &book_id, refresh_of(&q)).await?;
     Ok(Json(service::envelope(&p)))
 }
 
-async fn get_book_progress<G: GatewayApi>(
-    State((state, gw)): State<SharedState<G>>,
+async fn get_book_progress(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Path(book_id): Path<String>,
     Query(q): Query<RefreshQuery>,
 ) -> AppResult<Json<Value>> {
-    let p = service::proxy_book_progress(&state, gw.as_ref(), &book_id, refresh_of(&q)).await?;
+    let gw = state
+        .registry
+        .for_key(&key)
+        .map_err(AppError::from)?;
+    let p = service::proxy_book_progress(&state, gw.as_ref(), &key, &book_id, refresh_of(&q)).await?;
     Ok(Json(service::envelope(&p)))
 }
 
-async fn get_book_notes<G: GatewayApi>(
-    State((state, gw)): State<SharedState<G>>,
+async fn get_book_notes(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Path(book_id): Path<String>,
     Query(q): Query<RefreshQuery>,
 ) -> AppResult<Json<Value>> {
-    let p = service::proxy_book_notes(&state, gw.as_ref(), &book_id, refresh_of(&q)).await?;
+    let gw = state
+        .registry
+        .for_key(&key)
+        .map_err(AppError::from)?;
+    let p = service::proxy_book_notes(&state, gw.as_ref(), &key, &book_id, refresh_of(&q)).await?;
     Ok(Json(service::envelope(&p)))
 }
 
@@ -258,12 +289,13 @@ fn pct_encode(s: &str) -> String {
     out
 }
 
-async fn get_book_markdown<G: GatewayApi>(
-    State((state, _)): State<SharedState<G>>,
+async fn get_book_markdown(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Path(book_id): Path<String>,
     Query(q): Query<MarkdownQuery>,
 ) -> AppResult<Response> {
-    let file = service::get_markdown(&state, &book_id).await?;
+    let file = service::get_markdown(&state, &key, &book_id).await?;
     let content_type: axum::http::HeaderValue = "text/markdown; charset=utf-8".parse().unwrap();
     if q.download.unwrap_or(false) {
         let ascii_name = format!("weread-notes-{book_id}.md");
@@ -293,14 +325,20 @@ struct ReaddataQuery {
     refresh: Option<bool>,
 }
 
-async fn get_readdata<G: GatewayApi>(
-    State((state, gw)): State<SharedState<G>>,
+async fn get_readdata(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Query(q): Query<ReaddataQuery>,
 ) -> AppResult<Json<Value>> {
     let mode = q.mode.unwrap_or_else(|| "overall".to_string());
+    let gw = state
+        .registry
+        .for_key(&key)
+        .map_err(AppError::from)?;
     let p = service::proxy_readdata(
         &state,
         gw.as_ref(),
+        &key,
         &mode,
         q.base_time,
         q.refresh.unwrap_or(false),
@@ -317,8 +355,9 @@ struct SearchQuery {
     max_idx: Option<i64>,
 }
 
-async fn get_search<G: GatewayApi>(
-    State((_state, gw)): State<SharedState<G>>,
+async fn get_search(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Query(q): Query<SearchQuery>,
 ) -> AppResult<Json<Value>> {
     let keyword = q
@@ -336,14 +375,23 @@ async fn get_search<G: GatewayApi>(
         params["maxIdx"] = json!(max_idx);
     }
     // 搜索不做缓存（每人搜的词不同）
+    let gw = state
+        .registry
+        .for_key(&key)
+        .map_err(AppError::from)?;
     let data = gw.call("/store/search", params).await?;
     Ok(Json(data))
 }
 
-async fn get_gateway_apis<G: GatewayApi>(
-    State((state, gw)): State<SharedState<G>>,
+async fn get_gateway_apis(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Query(q): Query<RefreshQuery>,
 ) -> AppResult<Json<Value>> {
+    let gw = state
+        .registry
+        .for_key(&key)
+        .map_err(AppError::from)?;
     let p = service::proxy_gateway_apis(&state, gw.as_ref(), refresh_of(&q)).await?;
     Ok(Json(service::envelope(&p)))
 }
@@ -356,8 +404,9 @@ struct GatewayCallBody {
 }
 
 /// 逃生门：透传任意网关调用（官方网关全只读，无滥用面）。
-async fn post_gateway_call<G: GatewayApi>(
-    State((_, gw)): State<SharedState<G>>,
+async fn post_gateway_call(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     body: Bytes,
 ) -> AppResult<Json<Value>> {
     let req: GatewayCallBody = serde_json::from_slice(&body)
@@ -369,6 +418,10 @@ async fn post_gateway_call<G: GatewayApi>(
         Some(v @ Value::Object(_)) => v,
         _ => json!({}),
     };
+    let gw = state
+        .registry
+        .for_key(&key)
+        .map_err(AppError::from)?;
     let data = gw.call(&req.api_name, params).await?;
     Ok(Json(data))
 }
@@ -389,8 +442,9 @@ struct CreateReq {
 }
 
 /// 创建导出任务。body 手动解析以保证错误信封统一（400 而非 axum 默认 422）。
-async fn create_export<G: GatewayApi>(
-    State((state, gw)): State<SharedState<G>>,
+async fn create_export(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     body: Bytes,
 ) -> AppResult<Response> {
     let req: CreateReq =
@@ -399,9 +453,14 @@ async fn create_export<G: GatewayApi>(
         return Err(AppError::InvalidArgument("wait_timeout 最大 30 秒".to_string()));
     }
 
+    let gw = state
+        .registry
+        .for_key(&key)
+        .map_err(AppError::from)?;
     let outcome = service::create_task(
         &state,
         gw.as_ref(),
+        &key,
         service::CreateTaskInput {
             book_ids: req.book_ids,
             refresh: req.refresh,
@@ -416,7 +475,7 @@ async fn create_export<G: GatewayApi>(
             std::time::Instant::now() + std::time::Duration::from_secs(req.wait_timeout);
         while std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            view = service::get_task(&state, &view.task_id).await?;
+            view = service::get_task(&state, &key, &view.task_id).await?;
             if TERMINAL_STATUSES.contains(&view.status.as_str()) {
                 break;
             }
@@ -436,11 +495,12 @@ async fn create_export<G: GatewayApi>(
     Ok((code, Json(body)).into_response())
 }
 
-async fn get_export<G: GatewayApi>(
-    State((state, _)): State<SharedState<G>>,
+async fn get_export(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Path(task_id): Path<String>,
 ) -> AppResult<Json<TaskView>> {
-    Ok(Json(service::get_task(&state, &task_id).await?))
+    Ok(Json(service::get_task(&state, &key, &task_id).await?))
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -450,8 +510,9 @@ struct ListQuery {
     cursor: Option<i64>,
 }
 
-async fn list_exports<G: GatewayApi>(
-    State((state, _)): State<SharedState<G>>,
+async fn list_exports(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Query(q): Query<ListQuery>,
 ) -> AppResult<Json<Value>> {
     if let Some(s) = &q.status {
@@ -462,6 +523,7 @@ async fn list_exports<G: GatewayApi>(
     let limit = q.limit.unwrap_or(20).clamp(1, 100);
     let (tasks, next_cursor) = service::list_tasks(
         &state,
+        &key,
         service::ListFilter {
             status: q.status,
             limit,
@@ -476,19 +538,21 @@ async fn list_exports<G: GatewayApi>(
     })))
 }
 
-async fn delete_export<G: GatewayApi>(
-    State((state, _)): State<SharedState<G>>,
+async fn delete_export(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Path(task_id): Path<String>,
 ) -> AppResult<StatusCode> {
-    service::delete_task(&state, &task_id).await?;
+    service::delete_task(&state, &key, &task_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn get_result<G: GatewayApi>(
-    State((state, _)): State<SharedState<G>>,
+async fn get_result(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Path(task_id): Path<String>,
 ) -> AppResult<Json<service::ResultView>> {
-    Ok(Json(service::task_result(&state, &task_id).await?))
+    Ok(Json(service::task_result(&state, &key, &task_id).await?))
 }
 
 // --------------------------------------------------------------------------- //
@@ -502,8 +566,9 @@ fn task_event(name: &str, view: &TaskView) -> Result<Event, Infallible> {
 
 /// SSE 流：先推当前快照（progress），随后仅在进度变更时推送；
 /// 终态推 done（partial 也归 done，内容里带 error）/ error 后关流。
-async fn get_export_events<G: GatewayApi>(
-    State((state, _)): State<SharedState<G>>,
+async fn get_export_events(
+    State(state): State<AppState>,
+    Extension(WereadKey(key)): Extension<WereadKey>,
     Path(task_id): Path<String>,
 ) -> AppResult<
     Sse<
@@ -512,15 +577,15 @@ async fn get_export_events<G: GatewayApi>(
         >,
     >,
 > {
-    // 校验任务存在（404 快速失败）；订阅必须发生在 spawn 之前，
+    // 校验任务存在且属于该 Key（404 快速失败）；订阅必须发生在 spawn 之前，
     // 保证响应返回时已建立订阅，连接期间的通知不会丢失
-    service::get_task(&state, &task_id).await?;
+    service::get_task(&state, &key, &task_id).await?;
     let mut notify = state.subscribe_progress();
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, Infallible>>(16);
     tokio::spawn(async move {
         loop {
-            let Ok(view) = service::get_task(&state, &task_id).await else { return };
+            let Ok(view) = service::get_task(&state, &key, &task_id).await else { return };
             if TERMINAL_STATUSES.contains(&view.status.as_str()) {
                 let name = if view.status == "failed" { "error" } else { "done" };
                 let _ = tx.send(task_event(name, &view)).await;

@@ -1,8 +1,12 @@
 //! 服务层——代理缓存、任务 CRUD 与视图聚合、Markdown 读取、过期清理。
+//!
+//! BYOK：所有函数的 `key` 参数是请求携带的完整微信读书 API Key；
+//! 存储层用它派生的指纹（`key_fp`）隔离不同 Key 的缓存与产物。
 
 use rand::Rng;
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
 
 use crate::client::GatewayApi;
@@ -13,6 +17,12 @@ use super::error::{AppError, AppResult};
 use super::state::AppState;
 
 pub const TERMINAL_STATUSES: [&str; 3] = ["completed", "partial", "failed"];
+
+/// Key 指纹（sha256 前 8 hex）——存储隔离用，避免把完整 Key 撒进 cache key / 各表
+pub fn key_fp(key: &str) -> String {
+    let h = Sha256::digest(key.as_bytes());
+    h.iter().take(4).map(|b| format!("{b:02x}")).collect()
+}
 
 fn ms_to_rfc3339(ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
@@ -52,7 +62,7 @@ async fn cache_get(pool: &SqlitePool, key: &str) -> AppResult<Option<(String, i6
 
 /// 带缓存的网关调用：TTL 内直接回缓存；过期或 refresh 时回源。
 /// 回源失败但存在旧缓存时降级返回过期数据（fresh=false），提升容错。
-pub async fn cached_call<F, Fut>(
+async fn cached_call<F, Fut>(
     state: &AppState,
     cache_key: &str,
     ttl_secs: i64,
@@ -123,7 +133,11 @@ fn field_i64(v: &Value, key: &str) -> Option<i64> {
     v.get(key).and_then(|x| x.as_i64())
 }
 
-async fn upsert_books_from_shelf(pool: &SqlitePool, data: &Value) -> anyhow::Result<()> {
+async fn upsert_books_from_shelf(
+    pool: &SqlitePool,
+    owner: &str,
+    data: &Value,
+) -> anyhow::Result<()> {
     let Some(books) = data.get("books").and_then(|v| v.as_array()) else {
         return Ok(());
     };
@@ -137,15 +151,16 @@ async fn upsert_books_from_shelf(pool: &SqlitePool, data: &Value) -> anyhow::Res
         let author = b.get("author").and_then(|t| t.as_str()).unwrap_or("");
         let cover = b.get("cover").and_then(|t| t.as_str()).unwrap_or("");
         sqlx::query(
-            "INSERT INTO books (book_id, title, author, cover, progress, finish_reading,
+            "INSERT INTO books (owner, book_id, title, author, cover, progress, finish_reading,
                                 read_update_time, updated_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(book_id) DO UPDATE SET
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(owner, book_id) DO UPDATE SET
                 title=excluded.title, author=excluded.author, cover=excluded.cover,
                 progress=COALESCE(excluded.progress, books.progress),
                 finish_reading=excluded.finish_reading,
                 read_update_time=excluded.read_update_time, updated_ms=excluded.updated_ms",
         )
+        .bind(owner)
         .bind(&book_id)
         .bind(title)
         .bind(author)
@@ -160,7 +175,11 @@ async fn upsert_books_from_shelf(pool: &SqlitePool, data: &Value) -> anyhow::Res
     Ok(())
 }
 
-async fn upsert_books_from_notebooks(pool: &SqlitePool, books: &[Value]) -> anyhow::Result<()> {
+async fn upsert_books_from_notebooks(
+    pool: &SqlitePool,
+    owner: &str,
+    books: &[Value],
+) -> anyhow::Result<()> {
     let now = ServerConfig::now_ms();
     for nb in books {
         let book_id = fetch::id_str(nb.get("bookId"));
@@ -172,15 +191,16 @@ async fn upsert_books_from_notebooks(pool: &SqlitePool, books: &[Value]) -> anyh
         let author = book.get("author").and_then(|t| t.as_str()).unwrap_or("");
         let cover = book.get("cover").and_then(|t| t.as_str()).unwrap_or("");
         sqlx::query(
-            "INSERT INTO books (book_id, title, author, cover, bookmark_count, note_count,
+            "INSERT INTO books (owner, book_id, title, author, cover, bookmark_count, note_count,
                                 review_count, read_update_time, updated_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(book_id) DO UPDATE SET
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(owner, book_id) DO UPDATE SET
                 title=CASE WHEN excluded.title != '' THEN excluded.title ELSE books.title END,
                 author=excluded.author, cover=excluded.cover,
                 bookmark_count=excluded.bookmark_count, note_count=excluded.note_count,
                 review_count=excluded.review_count, updated_ms=excluded.updated_ms",
         )
+        .bind(owner)
         .bind(&book_id)
         .bind(title)
         .bind(author)
@@ -206,89 +226,99 @@ async fn upsert_best_effort(fut: impl std::future::Future<Output = anyhow::Resul
 // 同步代理端点
 // --------------------------------------------------------------------------- //
 
-pub async fn proxy_shelf<G: GatewayApi>(
+pub async fn proxy_shelf(
     state: &AppState,
-    gw: &G,
+    gw: &dyn GatewayApi,
+    key: &str,
     refresh: bool,
 ) -> AppResult<CachedPayload> {
     let ttl = state.config.cache_ttl_secs;
+    let cache_key = format!("{}:shelf/sync", key_fp(key));
+    let owner = key_fp(key);
     let pool = state.pool.clone();
-    cached_call(state, "shelf/sync", ttl, refresh, || async move {
+    cached_call(state, &cache_key, ttl, refresh, || async move {
         let data = gw.call("/shelf/sync", json!({})).await?;
-        upsert_best_effort(upsert_books_from_shelf(&pool, &data)).await;
+        upsert_best_effort(upsert_books_from_shelf(&pool, &owner, &data)).await;
         Ok(data)
     })
     .await
 }
 
-pub async fn proxy_notebooks<G: GatewayApi>(
+pub async fn proxy_notebooks(
     state: &AppState,
-    gw: &G,
+    gw: &dyn GatewayApi,
+    key: &str,
     refresh: bool,
 ) -> AppResult<CachedPayload> {
     let ttl = state.config.cache_ttl_secs;
+    let cache_key = format!("{}:notebooks", key_fp(key));
+    let owner = key_fp(key);
     let pool = state.pool.clone();
-    cached_call(state, "notebooks", ttl, refresh, || async move {
+    cached_call(state, &cache_key, ttl, refresh, || async move {
         let result = fetch::fetch_notebooks(gw, 100).await?;
         let data = json!({
             "books": result.books,
             "totalBookCount": result.total_book_count,
             "totalNoteCount": result.total_note_count,
         });
-        upsert_best_effort(upsert_books_from_notebooks(&pool, &result.books)).await;
+        upsert_best_effort(upsert_books_from_notebooks(&pool, &owner, &result.books)).await;
         Ok(data)
     })
     .await
 }
 
-pub async fn proxy_book_info<G: GatewayApi>(
+pub async fn proxy_book_info(
     state: &AppState,
-    gw: &G,
+    gw: &dyn GatewayApi,
+    key: &str,
     book_id: &str,
     refresh: bool,
 ) -> AppResult<CachedPayload> {
     validate_book_id(book_id)?;
-    let key = format!("book/info:{book_id}");
+    let cache_key = format!("{}:book/info:{book_id}", key_fp(key));
     let ttl = state.config.cache_ttl_secs;
-    cached_call(state, &key, ttl, refresh, || async move {
+    cached_call(state, &cache_key, ttl, refresh, || async move {
         gw.call("/book/info", json!({ "bookId": book_id })).await
     })
     .await
 }
 
-pub async fn proxy_book_chapters<G: GatewayApi>(
+pub async fn proxy_book_chapters(
     state: &AppState,
-    gw: &G,
+    gw: &dyn GatewayApi,
+    key: &str,
     book_id: &str,
     refresh: bool,
 ) -> AppResult<CachedPayload> {
     validate_book_id(book_id)?;
-    let key = format!("book/chapterinfo:{book_id}");
+    let cache_key = format!("{}:book/chapterinfo:{book_id}", key_fp(key));
     let ttl = state.config.cache_ttl_secs;
-    cached_call(state, &key, ttl, refresh, || async move {
+    cached_call(state, &cache_key, ttl, refresh, || async move {
         gw.call("/book/chapterinfo", json!({ "bookId": book_id })).await
     })
     .await
 }
 
-pub async fn proxy_book_progress<G: GatewayApi>(
+pub async fn proxy_book_progress(
     state: &AppState,
-    gw: &G,
+    gw: &dyn GatewayApi,
+    key: &str,
     book_id: &str,
     refresh: bool,
 ) -> AppResult<CachedPayload> {
     validate_book_id(book_id)?;
-    let key = format!("book/getprogress:{book_id}");
+    let cache_key = format!("{}:book/getprogress:{book_id}", key_fp(key));
     let ttl = state.config.cache_ttl_secs;
-    cached_call(state, &key, ttl, refresh, || async move {
+    cached_call(state, &cache_key, ttl, refresh, || async move {
         gw.call("/book/getprogress", json!({ "bookId": book_id })).await
     })
     .await
 }
 
-pub async fn proxy_readdata<G: GatewayApi>(
+pub async fn proxy_readdata(
     state: &AppState,
-    gw: &G,
+    gw: &dyn GatewayApi,
+    key: &str,
     mode: &str,
     base_time: Option<i64>,
     refresh: bool,
@@ -298,10 +328,10 @@ pub async fn proxy_readdata<G: GatewayApi>(
             "非法 mode: {mode}（允许值: weekly/monthly/annually/overall）"
         )));
     }
-    let key = format!("readdata:{mode}:{}", base_time.unwrap_or(0));
+    let cache_key = format!("{}:readdata:{mode}:{}", key_fp(key), base_time.unwrap_or(0));
     let ttl = state.config.cache_ttl_secs;
     let mode = mode.to_string();
-    cached_call(state, &key, ttl, refresh, || async move {
+    cached_call(state, &cache_key, ttl, refresh, || async move {
         let mut params = json!({ "mode": mode });
         if let Some(t) = base_time {
             params["baseTime"] = json!(t);
@@ -311,11 +341,12 @@ pub async fn proxy_readdata<G: GatewayApi>(
     .await
 }
 
-pub async fn proxy_gateway_apis<G: GatewayApi>(
+pub async fn proxy_gateway_apis(
     state: &AppState,
-    gw: &G,
+    gw: &dyn GatewayApi,
     refresh: bool,
 ) -> AppResult<CachedPayload> {
+    // /_list 是网关自描述，与 Key 无关，不按指纹隔离
     cached_call(state, "gateway/_list", 86_400, refresh, || async {
         gw.call("/_list", json!({})).await
     })
@@ -323,16 +354,17 @@ pub async fn proxy_gateway_apis<G: GatewayApi>(
 }
 
 /// 单书笔记（编排端点）：bookmarklist + 想法合并；书名缺失时从笔记本概览回查。
-pub async fn proxy_book_notes<G: GatewayApi>(
+pub async fn proxy_book_notes(
     state: &AppState,
-    gw: &G,
+    gw: &dyn GatewayApi,
+    key: &str,
     book_id: &str,
     refresh: bool,
 ) -> AppResult<CachedPayload> {
     validate_book_id(book_id)?;
-    let key = format!("notes:{book_id}");
+    let cache_key = format!("{}:notes:{book_id}", key_fp(key));
     let ttl = state.config.cache_ttl_secs;
-    cached_call(state, &key, ttl, refresh, || async move {
+    cached_call(state, &cache_key, ttl, refresh, || async move {
         let detail = fetch::fetch_note_detail(gw, book_id).await?;
         let mut book = detail.book;
         let need_fallback = book
@@ -404,12 +436,14 @@ pub struct CreateTaskOutcome {
     pub queued_books: usize,
 }
 
-pub async fn create_task<G: GatewayApi>(
+pub async fn create_task(
     state: &AppState,
-    gw: &G,
+    gw: &dyn GatewayApi,
+    key: &str,
     input: CreateTaskInput,
 ) -> AppResult<CreateTaskOutcome> {
     let now = ServerConfig::now_ms();
+    let owner = key_fp(key);
 
     // 解析书单
     let requested: Vec<String> = match &input.book_ids {
@@ -453,7 +487,7 @@ pub async fn create_task<G: GatewayApi>(
         return Err(AppError::TooManyTasks);
     }
 
-    // 已导出的书直接跳过（除非 refresh）
+    // 该 Key 已导出的书直接跳过（除非 refresh）
     struct Item {
         book_id: String,
         exported: Option<(i64, i64)>,
@@ -463,7 +497,8 @@ pub async fn create_task<G: GatewayApi>(
         let exported: Option<(i64, i64)> = if input.refresh {
             None
         } else {
-            sqlx::query_as("SELECT bookmarks, reviews FROM exports WHERE book_id = ?")
+            sqlx::query_as("SELECT bookmarks, reviews FROM exports WHERE owner = ? AND book_id = ?")
+                .bind(&owner)
                 .bind(book_id)
                 .fetch_optional(&state.pool)
                 .await?
@@ -491,12 +526,16 @@ pub async fn create_task<G: GatewayApi>(
         "refresh": input.refresh,
     }))
     .map_err(|e| AppError::Internal(e.to_string()))?;
-    sqlx::query("INSERT INTO tasks (task_id, request_json, status, created_ms) VALUES (?, ?, 'queued', ?)")
-        .bind(&task_id)
-        .bind(&request_json)
-        .bind(now)
-        .execute(&state.pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO tasks (task_id, api_key, request_json, status, created_ms)
+         VALUES (?, ?, ?, 'queued', ?)",
+    )
+    .bind(&task_id)
+    .bind(key) // worker 后续处理需要；本地 SQLite 个人工具可接受
+    .bind(&request_json)
+    .bind(now)
+    .execute(&state.pool)
+    .await?;
 
     for item in &items {
         sqlx::query(
@@ -521,7 +560,7 @@ pub async fn create_task<G: GatewayApi>(
         recompute_task_status(state, &task_id).await?;
     }
 
-    let view = get_task(state, &task_id).await?;
+    let view = get_task(state, key, &task_id).await?;
     Ok(CreateTaskOutcome {
         view,
         skipped_cached,
@@ -550,34 +589,40 @@ pub struct TaskView {
     pub result_url: String,
 }
 
-async fn lookup_title(state: &AppState, book_id: &str) -> Option<String> {
-    let t: Option<String> = sqlx::query_scalar("SELECT title FROM books WHERE book_id = ?")
-        .bind(book_id)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
+async fn lookup_title(state: &AppState, owner: &str, book_id: &str) -> Option<String> {
+    let t: Option<String> =
+        sqlx::query_scalar("SELECT title FROM books WHERE owner = ? AND book_id = ?")
+            .bind(owner)
+            .bind(book_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
     if let Some(title) = t.filter(|s| !s.is_empty()) {
         return Some(title);
     }
-    let bj: Option<String> = sqlx::query_scalar("SELECT book_json FROM exports WHERE book_id = ?")
-        .bind(book_id)
-        .fetch_optional(&state.pool)
-        .await
-        .ok()
-        .flatten();
+    let bj: Option<String> =
+        sqlx::query_scalar("SELECT book_json FROM exports WHERE owner = ? AND book_id = ?")
+            .bind(owner)
+            .bind(book_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
     bj.and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .and_then(|v| v.get("title").and_then(|t| t.as_str()).map(String::from))
         .filter(|s| !s.is_empty())
 }
 
-pub async fn get_task(state: &AppState, task_id: &str) -> AppResult<TaskView> {
+pub async fn get_task(state: &AppState, key: &str, task_id: &str) -> AppResult<TaskView> {
+    let owner = key_fp(key);
     let row = sqlx::query(
         "SELECT task_id, request_json, status, items_count, error_json,
                 created_ms, started_ms, finished_ms, expires_ms
-         FROM tasks WHERE task_id = ?",
+         FROM tasks WHERE task_id = ? AND api_key = ?",
     )
     .bind(task_id)
+    .bind(key)
     .fetch_optional(&state.pool)
     .await?
     .ok_or_else(|| AppError::TaskNotFound(task_id.to_string()))?;
@@ -602,16 +647,17 @@ pub async fn get_task(state: &AppState, task_id: &str) -> AppResult<TaskView> {
     }
     let total_books = done + skipped + failed + pending;
 
-    let current_book_id: Option<String> =
-        sqlx::query("SELECT book_id FROM export_items WHERE task_id = ? AND state = 'running' LIMIT 1")
-            .bind(task_id)
-            .fetch_optional(&state.pool)
-            .await?
-            .map(|r| r.get::<String, _>("book_id"));
+    let current_book_id: Option<String> = sqlx::query(
+        "SELECT book_id FROM export_items WHERE task_id = ? AND state = 'running' LIMIT 1",
+    )
+    .bind(task_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .map(|r| r.get::<String, _>("book_id"));
 
     let current = match current_book_id {
         Some(book_id) => {
-            let title = lookup_title(state, &book_id).await;
+            let title = lookup_title(state, &owner, &book_id).await;
             Some(json!({"book_id": book_id, "title": title}))
         }
         None => None,
@@ -666,15 +712,18 @@ pub struct TaskSummary {
 
 pub async fn list_tasks(
     state: &AppState,
+    key: &str,
     f: ListFilter,
 ) -> AppResult<(Vec<TaskSummary>, Option<i64>)> {
     let rows = sqlx::query(
         "SELECT rowid, task_id, status, items_count, created_ms FROM tasks
-         WHERE (? IS NULL OR status = ?)
+         WHERE api_key = ?
+           AND (? IS NULL OR status = ?)
            AND (? IS NULL OR rowid < ?)
          ORDER BY rowid DESC
          LIMIT ?",
     )
+    .bind(key)
     .bind(&f.status)
     .bind(&f.status)
     .bind(f.cursor_rowid)
@@ -707,12 +756,14 @@ pub async fn list_tasks(
     Ok((summaries, next_cursor))
 }
 
-pub async fn delete_task(state: &AppState, task_id: &str) -> AppResult<()> {
-    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM tasks WHERE task_id = ?")
-        .bind(task_id)
-        .fetch_optional(&state.pool)
-        .await?
-        .flatten();
+pub async fn delete_task(state: &AppState, key: &str, task_id: &str) -> AppResult<()> {
+    let exists: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM tasks WHERE task_id = ? AND api_key = ?")
+            .bind(task_id)
+            .bind(key)
+            .fetch_optional(&state.pool)
+            .await?
+            .flatten();
     if exists.is_none() {
         return Err(AppError::TaskNotFound(task_id.to_string()));
     }
@@ -751,9 +802,11 @@ pub struct ResultView {
     pub books: Vec<ResultBookView>,
 }
 
-pub async fn task_result(state: &AppState, task_id: &str) -> AppResult<ResultView> {
-    let row = sqlx::query("SELECT status FROM tasks WHERE task_id = ?")
+pub async fn task_result(state: &AppState, key: &str, task_id: &str) -> AppResult<ResultView> {
+    let owner = key_fp(key);
+    let row = sqlx::query("SELECT status FROM tasks WHERE task_id = ? AND api_key = ?")
         .bind(task_id)
+        .bind(key)
         .fetch_optional(&state.pool)
         .await?
         .ok_or_else(|| AppError::TaskNotFound(task_id.to_string()))?;
@@ -789,7 +842,7 @@ pub async fn task_result(state: &AppState, task_id: &str) -> AppResult<ResultVie
             failed += 1;
         }
         books.push(ResultBookView {
-            title: lookup_title(state, &book_id).await,
+            title: lookup_title(state, &owner, &book_id).await,
             markdown_url: if ok {
                 Some(format!("/api/v1/books/{book_id}/notes/markdown"))
             } else {
@@ -912,11 +965,14 @@ pub struct MarkdownFile {
     pub exported_at: String,
 }
 
-pub async fn get_markdown(state: &AppState, book_id: &str) -> AppResult<MarkdownFile> {
+pub async fn get_markdown(state: &AppState, key: &str, book_id: &str) -> AppResult<MarkdownFile> {
     validate_book_id(book_id)?;
+    let owner = key_fp(key);
     let row = sqlx::query(
-        "SELECT markdown, book_json, bookmarks, reviews, exported_ms FROM exports WHERE book_id = ?",
+        "SELECT markdown, book_json, bookmarks, reviews, exported_ms FROM exports
+         WHERE owner = ? AND book_id = ?",
     )
+    .bind(&owner)
     .bind(book_id)
     .fetch_optional(&state.pool)
     .await?
@@ -983,17 +1039,6 @@ async fn cleanup_once(state: &AppState) -> anyhow::Result<()> {
 // 服务元信息
 // --------------------------------------------------------------------------- //
 
-fn mask_key(key: &str) -> String {
-    let chars: Vec<char> = key.chars().collect();
-    if chars.len() > 16 {
-        let head: String = chars[..8].iter().collect();
-        let tail: String = chars[chars.len() - 4..].iter().collect();
-        format!("{}...{}", head, tail)
-    } else {
-        "***".to_string()
-    }
-}
-
 pub async fn server_info(state: &AppState) -> AppResult<Value> {
     let waiting: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM export_items WHERE state = 'waiting'")
@@ -1015,10 +1060,10 @@ pub async fn server_info(state: &AppState) -> AppResult<Value> {
     Ok(json!({
         "name": "weread-notes-server",
         "version": env!("CARGO_PKG_VERSION"),
+        "key_mode": "byok",
         "gateway": {
             "base_url": state.config.gateway_url,
             "skill_version": crate::client::SKILL_VERSION,
-            "api_key": mask_key(&state.config.api_key),
             "min_interval_ms": state.config.gateway_min_interval_ms,
         },
         "cache": { "ttl_seconds": state.config.cache_ttl_secs },
@@ -1034,6 +1079,5 @@ pub async fn server_info(state: &AppState) -> AppResult<Value> {
             "open": circuit_remaining > 0,
             "remaining_ms": circuit_remaining,
         },
-        "auth_enabled": !state.config.token.is_empty(),
     }))
 }

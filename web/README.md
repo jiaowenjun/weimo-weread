@@ -11,17 +11,17 @@
 | **笔记** `/notes` | 笔记本列表（划线/笔记/想法计数 + 最近更新，支持搜索）→ 单书笔记面板（按章节分组的划线时间线 + 我的想法，结构与导出的 Markdown 一致）；「导出此书」秒级完成（wait_timeout 同步等待），已导出的书显示标记并可下载 Markdown |
 | **导出任务** `/exports` | 任务列表（状态筛选、游标翻页）、新建导出（全部书/指定 bookId/强制重导）、详情抽屉（SSE 进度推流 + 轮询降级、按书结果与 Markdown 下载）、删除任务（产物保留） |
 
-右上角「连接」可修改 API 地址与 Bearer Token（存 localStorage）：
+右上角「连接」配置 API 地址与**微信读书 API Key**（BYOK，必填；存本浏览器 localStorage，逐请求经 `X-Weread-Key` 头传给后端，服务器不保存 Key）：
 
-- 默认 `/api/v1`（同源部署或开发期 Vite 代理，无需 CORS）
-- 跨源部署填完整地址（如 `http://192.168.1.10:8081/api/v1`），需服务器设置 `WEREAD_SERVER_CORS_ORIGINS`
-- 服务器设置了 `WEREAD_SERVER_TOKEN` 时在此填写（SSE 与 Markdown 下载链接自动走 `?token=`）
+- API 地址默认 `/api/v1`（同源部署或开发期 Vite 代理，无需 CORS）；跨源填完整地址（如 `http://192.168.1.10:8081/api/v1`），需服务器设置 `WEREAD_SERVER_CORS_ORIGINS`
+- Key 获取页面: https://weread.qq.com/r/weread-skills；SSE 与 Markdown 下载链接自动走 `?key=` 传参
+- 未配置 Key 时概览页会出现引导提示
 
 ## 开发
 
 ```bash
-# 1. 启动后端（仓库根目录，默认 127.0.0.1:8081）
-WEREAD_API_KEY=wrk-xxx cargo run --bin weread-notes-server
+# 1. 启动后端（仓库根目录，默认 127.0.0.1:8081；BYOK 无需任何 Key 环境变量）
+cargo run --bin weread-notes-server
 
 # 2. 启动前端（另一个终端，Vite 已配置 /api 与 /healthz 代理到 8081）
 cd web && ppm install && pnpm dev   # 打开 http://localhost:5174
@@ -39,7 +39,7 @@ pnpm build   # tsc 类型检查 + vite 打包到 dist/
 
 ```
 src/
-  api.ts                    # fetch 封装：base/token、错误信封解析、SSE/Markdown 直链
+  api.ts                    # fetch 封装：base/微信读书Key（BYOK）、错误信封解析、SSE/Markdown 直链
   types.ts                  # 与 src/server/service.rs 响应结构一一对应
   labels.tsx                # 状态中文标签、时间戳/时长格式化
   App.tsx                   # ProLayout 布局 + 路由 + 连接设置

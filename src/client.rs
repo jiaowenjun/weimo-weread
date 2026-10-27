@@ -48,13 +48,11 @@ impl GatewayError {
     }
 }
 
-/// 网关调用抽象——生产实现为 [`WereadClient`]，测试注入 fake。
+/// 网关调用抽象——生产实现为 [`WereadClient`]（服务器经 `server::gateway` 的注册表按
+/// Key 解析），测试注入 fake。async_trait 以支持 `Arc<dyn GatewayApi>` 动态分发。
+#[async_trait::async_trait]
 pub trait GatewayApi: Send + Sync {
-    fn call(
-        &self,
-        api_name: &str,
-        params: Value,
-    ) -> impl std::future::Future<Output = Result<Value, GatewayError>> + Send;
+    async fn call(&self, api_name: &str, params: Value) -> Result<Value, GatewayError>;
 }
 
 pub struct WereadClient {
@@ -208,6 +206,7 @@ impl WereadClient {
     }
 }
 
+#[async_trait::async_trait]
 impl GatewayApi for WereadClient {
     async fn call(&self, api_name: &str, params: Value) -> Result<Value, GatewayError> {
         WereadClient::call(self, api_name, params).await

@@ -69,8 +69,8 @@ pub async fn cmd_notebooks(
 }
 
 /// 导出单书：划线 + 想法 → Markdown（供 CLI 与测试复用的完整编排）。
-pub async fn export_book_markdown<G: GatewayApi>(
-    gw: &G,
+pub async fn export_book_markdown(
+    gw: &dyn GatewayApi,
     book_id: &str,
 ) -> Result<(String, Value, i64, i64), GatewayError> {
     let detail = fetch::fetch_note_detail(gw, book_id).await?;
