@@ -515,8 +515,9 @@ async fn upstream_failure_falls_back_to_stale_cache() {
 // --------------------------------------------------------------------------- //
 
 #[tokio::test]
-async fn markdown_404_before_export() {
+async fn markdown_endpoint_removed() {
     let t = setup().await;
+    // Markdown 导出功能已删除：路由不存在（axum 默认 404，无错误信封）
     let resp = t
         .app
         .clone()
@@ -524,13 +525,10 @@ async fn markdown_404_before_export() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-    let v = body_json(resp).await;
-    assert_eq!(v["error"]["code"], json!("EXPORT_NOT_FOUND"));
-    assert!(v["error"]["hint"].as_str().unwrap().contains("/exports"));
 }
 
 #[tokio::test]
-async fn export_single_book_then_markdown_available() {
+async fn export_single_book_persists_raw_json() {
     let t = setup().await;
     let (status, v) = create_export(&t, json!({"book_ids": ["B1"]})).await;
     assert_eq!(status, StatusCode::ACCEPTED);
@@ -551,7 +549,7 @@ async fn export_single_book_then_markdown_available() {
     assert_eq!(v["progress"]["done_books"], json!(1));
     assert_eq!(v["items_count"], json!(4)); // 3 划线 + 1 想法
 
-    // result 汇总
+    // result 汇总（结果视图不再携带 markdown_url）
     let resp = t
         .app
         .clone()
@@ -561,44 +559,27 @@ async fn export_single_book_then_markdown_available() {
     let v = body_json(resp).await;
     assert_eq!(v["summary"]["bookmarks"], json!(3));
     assert_eq!(v["summary"]["reviews"], json!(1));
-    assert_eq!(
-        v["books"][0]["markdown_url"].as_str().unwrap(),
-        "/api/v1/books/B1/notes/markdown"
-    );
+    assert_eq!(v["books"][0]["state"], json!("done"));
+    assert_eq!(v["books"][0]["title"], json!("书B1"));
+    assert!(v["books"][0].get("markdown_url").is_none());
 
-    // Markdown 可读，带书名内容
-    let resp = t
-        .app
-        .clone()
-        .oneshot(req("GET", "/api/v1/books/B1/notes/markdown"))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let text = body_text(resp).await;
-    assert!(text.contains("划线甲"));
-    assert!(text.contains("想法一"));
-    assert!(text.contains("《书B1》"));
-
-    // 下载模式带 Content-Disposition（经 ?key= 直链鉴权，模拟 <a download>）
-    let resp = t
-        .app
-        .clone()
-        .oneshot(req_nokey(
-            "GET",
-            &format!("/api/v1/books/B1/notes/markdown?download=true&key={TEST_KEY}"),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let disp = resp
-        .headers()
-        .get(header::CONTENT_DISPOSITION)
+    // 原始 JSON 直接入库：书/章节/划线/想法全量保存（独立临时库，单 owner，按 book_id 查）
+    let row: (String,) =
+        sqlx::query_as("SELECT data_json FROM exports WHERE book_id = 'B1'")
+            .fetch_one(&t.state.pool)
+            .await
+            .unwrap();
+    let data: Value = serde_json::from_str(&row.0).unwrap();
+    assert_eq!(data["book"]["title"], json!("书B1"));
+    assert_eq!(data["chapters"].as_array().unwrap().len(), 2);
+    let marks: Vec<&str> = data["bookmarks"]
+        .as_array()
         .unwrap()
-        .to_str()
-        .unwrap()
-        .to_string();
-    assert!(disp.starts_with("attachment;"));
-    assert!(disp.contains("filename*=UTF-8''"));
+        .iter()
+        .map(|b| b["markText"].as_str().unwrap())
+        .collect();
+    assert_eq!(marks, vec!["划线甲", "划线乙", "划线丙"]);
+    assert_eq!(data["reviews"][0]["review"]["content"], json!("想法一"));
 }
 
 #[tokio::test]
@@ -741,7 +722,7 @@ async fn transient_error_backs_off_then_succeeds() {
 async fn wait_timeout_returns_terminal_when_all_skipped() {
     let t = setup().await;
     // 先导出一本书
-    let (_, v) = create_export(&t, json!({"book_ids": ["B1"]})).await;
+    let _ = create_export(&t, json!({"book_ids": ["B1"]})).await;
     drain_worker(&t).await;
 
     // 再次导出同书：全部命中已有 exports，wait_timeout 内立即终态 → 200
@@ -779,14 +760,12 @@ async fn task_list_and_delete_keeps_exports() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
-    // 产物保留：Markdown 仍可读
-    let resp = t
-        .app
-        .clone()
-        .oneshot(req("GET", "/api/v1/books/B1/notes/markdown"))
+    // 产物保留：exports 表数据仍在
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM exports WHERE book_id = 'B1'")
+        .fetch_one(&t.state.pool)
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(n, 1);
 
     let _ = v2;
 }

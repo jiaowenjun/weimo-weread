@@ -19,8 +19,6 @@ pub enum AppError {
     Unauthorized(String),
     #[error("任务不存在或已过期: {0}")]
     TaskNotFound(String),
-    #[error("该书尚未导出，请先创建导出任务")]
-    ExportNotFound { book_id: String },
     #[error("任务未完成（当前状态: {0}）")]
     TaskNotFinished(String),
     #[error("请求过于频繁，请稍后再试")]
@@ -47,7 +45,6 @@ impl AppError {
             AppError::InvalidArgument(_) => "INVALID_ARGUMENT",
             AppError::Unauthorized(_) => "UNAUTHORIZED",
             AppError::TaskNotFound(_) => "TASK_NOT_FOUND",
-            AppError::ExportNotFound { .. } => "EXPORT_NOT_FOUND",
             AppError::TaskNotFinished(_) => "TASK_NOT_FINISHED",
             AppError::TooManyRequests => "TOO_MANY_REQUESTS",
             AppError::TooManyTasks => "TOO_MANY_TASKS",
@@ -64,7 +61,7 @@ impl AppError {
         match self {
             AppError::InvalidArgument(_) => StatusCode::BAD_REQUEST,
             AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
-            AppError::TaskNotFound(_) | AppError::ExportNotFound { .. } => StatusCode::NOT_FOUND,
+            AppError::TaskNotFound(_) => StatusCode::NOT_FOUND,
             AppError::TaskNotFinished(_) => StatusCode::CONFLICT,
             AppError::TooManyRequests | AppError::TooManyTasks => StatusCode::TOO_MANY_REQUESTS,
             AppError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -78,10 +75,6 @@ impl AppError {
     /// 信封附带的机器可读补充字段
     fn extra(&self) -> Option<Value> {
         match self {
-            AppError::ExportNotFound { book_id } => Some(json!({
-                "book_id": book_id,
-                "hint": format!("POST /api/v1/exports {{\"book_ids\":[\"{book_id}\"],\"wait_timeout\":30}}"),
-            })),
             AppError::UpstreamApi { errcode, .. } => Some(json!({ "errcode": errcode })),
             _ => None,
         }

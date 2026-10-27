@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Card, Descriptions, Drawer, Progress, Table } from 'antd';
-import { DownloadOutlined } from '@ant-design/icons';
+import { Alert, Card, Descriptions, Drawer, Progress, Table } from 'antd';
 import dayjs from 'dayjs';
 import type { ResultView, TaskView } from '../types';
-import { api, markdownUrl } from '../api';
+import { api } from '../api';
 import { BookStateTag, TaskStatusTag } from '../labels';
 
 const TERMINAL = ['completed', 'partial', 'failed'];
@@ -174,22 +173,6 @@ export default function TaskDetailDrawer({
                   { title: '状态', dataIndex: 'state', width: 90, render: (_, r) => <BookStateTag state={r.state} /> },
                   { title: '划线', dataIndex: 'bookmarks', width: 70 },
                   { title: '想法', dataIndex: 'reviews', width: 70 },
-                  {
-                    title: '',
-                    width: 110,
-                    render: (_, r) =>
-                      r.markdown_url ? (
-                        <Button
-                          type="link"
-                          size="small"
-                          icon={<DownloadOutlined />}
-                          href={markdownUrl(r.book_id, true)}
-                          target="_blank"
-                        >
-                          Markdown
-                        </Button>
-                      ) : null,
-                  },
                 ]}
               />
             </Card>

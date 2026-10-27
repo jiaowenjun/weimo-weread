@@ -11,6 +11,29 @@ pub fn as_i64(v: Option<&Value>) -> i64 {
     v.and_then(|x| x.as_i64()).unwrap_or(0)
 }
 
+/// Unix 时间戳(秒或毫秒) -> "YYYY-MM-DD HH:MM"(本地时区)。
+pub fn fmt_time(v: i64) -> Option<String> {
+    use chrono::{Local, TimeZone};
+    if v <= 0 {
+        return None;
+    }
+    let secs = if v > 1_000_000_000_000 { v / 1000 } else { v };
+    match Local.timestamp_opt(secs, 0) {
+        chrono::LocalResult::Single(dt) => Some(dt.format("%Y-%m-%d %H:%M").to_string()),
+        _ => None,
+    }
+}
+
+/// 按字符数截断(对中日韩字符与 Python len 口径一致)。
+pub fn clip(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(n - 1).collect();
+        format!("{}…", head)
+    }
+}
+
 /// bookId 兼容字符串与数字两种返回形态。
 pub fn id_str(v: Option<&Value>) -> String {
     match v {

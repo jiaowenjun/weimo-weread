@@ -76,31 +76,8 @@ export const health = async () => {
   return (await res.json()) as { status: string };
 };
 
-/** Markdown 直链（<a download> 无法带 Header，Key 经 ?key= 传递，服务端支持） */
-export const markdownUrl = (bookId: string, download = false) => {
-  const qs = new URLSearchParams();
-  if (download) qs.set('download', 'true');
-  const key = getWereadKey();
-  if (key) qs.set('key', key);
-  const q = qs.toString();
-  return `${getApiBase()}/books/${encodeURIComponent(bookId)}/notes/markdown${q ? `?${q}` : ''}`;
-};
-
-/** 探测某书是否已导出过 Markdown（只看状态码，不下载正文） */
-export const markdownExists = async (bookId: string): Promise<boolean> => {
-  const res = await fetch(markdownUrl(bookId), { headers: authHeaders() });
-  const ok = res.ok;
-  try {
-    await res.body?.cancel();
-  } catch {
-    /* body 未开时忽略 */
-  }
-  return ok;
-};
-
 export const api = {
   serverInfo: () => request<ServerInfo>('/server/info'),
-  markdownExists,
 
   // ---- 同步代理 ----
   getShelf: (refresh?: boolean) =>

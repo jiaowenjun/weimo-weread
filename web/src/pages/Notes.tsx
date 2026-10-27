@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { App as AntApp, Badge, Button, Card, Col, Empty, Input, List, Row, Spin, Tag, Tooltip, theme } from 'antd';
-import { DownloadOutlined, ExportOutlined, ReloadOutlined } from '@ant-design/icons';
+import { App as AntApp, Button, Card, Col, Empty, Input, List, Row, Spin, Tag, Tooltip, theme } from 'antd';
+import { ExportOutlined, ReloadOutlined } from '@ant-design/icons';
 import { PageContainer } from '@ant-design/pro-components';
 import dayjs from 'dayjs';
 import type { BookNotesData, CachedEnvelope, NotebooksData } from '../types';
-import { api, markdownUrl } from '../api';
+import { api } from '../api';
 import { wereadTime } from '../labels';
 
 function fmtTs(v: unknown): string {
@@ -13,7 +13,7 @@ function fmtTs(v: unknown): string {
   return ms ? dayjs(ms).format('YYYY-MM-DD HH:mm') : '';
 }
 
-/** 单书笔记面板：按章节分组渲染划线 + 我的想法（结构对齐导出的 Markdown） */
+/** 单书笔记面板：按章节分组渲染划线 + 我的想法，可一键保存到服务端 */
 function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: () => void }) {
   const { message } = AntApp.useApp();
   const { token } = theme.useToken();
@@ -21,7 +21,6 @@ function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: (
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
-  const [exported, setExported] = useState<boolean | null>(null);
 
   const load = useCallback(
     async (refresh = false) => {
@@ -40,12 +39,7 @@ function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: (
   );
 
   useEffect(() => {
-    setExported(null);
     void load(false);
-    api
-      .markdownExists(bookId)
-      .then(setExported)
-      .catch(() => setExported(false));
   }, [bookId, load]);
 
   const notes = envelope?.data;
@@ -77,11 +71,10 @@ function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: (
     try {
       const res = await api.createTask({ book_ids: [bookId], wait_timeout: 30 });
       if (['completed', 'partial'].includes(res.status)) {
-        setExported(true);
-        message.success(`已导出《${title}》（${res.items_count} 条）`);
+        message.success(`已保存《${title}》到服务端（${res.items_count} 条）`);
         onExported?.();
       } else {
-        message.info('导出仍在进行，请到「导出任务」页查看进度');
+        message.info('保存仍在进行，请到「导出任务」页查看进度');
       }
     } catch (e) {
       message.error((e as Error).message);
@@ -99,34 +92,11 @@ function BookNotesPanel({ bookId, onExported }: { bookId: string; onExported?: (
         </span>
       }
       extra={
-        <>
-          {exported === true && (
-            <Tooltip title="导出的 Markdown 长期保存在服务端">
-              <Badge status="success" text="已导出" style={{ marginRight: 12 }} />
-            </Tooltip>
-          )}
-          <Button
-            size="small"
-            icon={<ExportOutlined />}
-            loading={exporting}
-            onClick={exportBook}
-            style={{ marginRight: 8 }}
-          >
-            导出此书
+        <Tooltip title="笔记原始数据（书/章节/划线/想法）长期保存在服务端 SQLite">
+          <Button size="small" icon={<ExportOutlined />} loading={exporting} onClick={exportBook}>
+            保存此书
           </Button>
-          {exported && (
-            <Button
-              size="small"
-              type="primary"
-              ghost
-              icon={<DownloadOutlined />}
-              href={markdownUrl(bookId, true)}
-              target="_blank"
-            >
-              下载 Markdown
-            </Button>
-          )}
-        </>
+        </Tooltip>
       }
     >
       {loading && <Spin style={{ display: 'block', margin: '24px auto' }} />}

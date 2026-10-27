@@ -142,7 +142,6 @@ export interface ResultBook {
   bookmarks: number | null;
   reviews: number | null;
   error: string | null;
-  markdown_url: string | null;
 }
 
 export interface ResultView {

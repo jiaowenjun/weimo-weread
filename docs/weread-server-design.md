@@ -42,7 +42,7 @@ douban-api 的架构是围绕「慢速 HTML 爬虫」设计的；weread 的上�
 | 上游限速 | 豆瓣反爬，超速封 IP | 官方未公布限额，宽松但未知 | 节流从「生存前提」降级为「礼貌保守」 |
 | 认证 | 免登录（可选 Cookie） | 上游 Key = 本人身份 | **单用户服务**；无 uid 维度；两层凭据模型 |
 | 数据范围 | 任意公开用户 | 仅 Key 持有者本人 + 公开社区内容 | 缓存键不含 uid；无多租户 |
-| 数据形态 | 扁平 12 字段记录 | 嵌套 JSON（书/章节/划线/想法） | 持久化以「导出产物（Markdown）+ 书籍元数据」为主 |
+| 数据形态 | 扁平 12 字段记录 | 嵌套 JSON（书/章节/划线/想法） | 持久化以「笔记原始 JSON（exports 表）+ 书籍元数据」为主 |
 | 写操作 | 无 | 无（官方网关全只读） | 同 douban，纯读服务 |
 
 三条硬约束：
@@ -64,7 +64,7 @@ douban-api 的架构是围绕「慢速 HTML 爬虫」设计的；weread 的上�
                   微信读书 Agent Gateway (i.weread.qq.com, Bearer wrk-...)
                         
                   导出 worker（单 worker 串行，DB 即队列，watch 唤醒）
-                        │  逐书: bookmarklist + review/list/mine 翻页 → 入库 + 生成 Markdown
+                        │  逐书: bookmarklist + review/list/mine 翻页 → 原始 JSON 入库(exports)
                         ▼
                   SQLite: cache_entries / tasks / export_items / books / exports
 ```
@@ -93,15 +93,16 @@ douban-api 的架构是围绕「慢速 HTML 爬虫」设计的；weread 的上�
 ### D2：混合模型——同步代理 + 异步导出（本方案与 douban 最大的分野）
 
 - **同步代理**：书架、笔记本概览、书籍详情/目录/进度、阅读统计、单书笔记、搜索——这些上游单调用（或 2~3 次）秒级返回的接口，直接同步 GET + SQLite TTL 缓存（`?refresh=true` 强制回源）。**不任务化**——douban 任务化的原因是豆瓣慢，这里没有这个约束
-- **异步导出**：只有「批量导出多本书的笔记（Markdown）」走任务模型（POST /exports → 202 → 轮询/SSE）。单书导出 = 单书任务 + `wait_timeout` 同步逃生门（douban 已验证的模式），前端「导出此书」按钮秒级拿到结果
+- **异步保存**：只有「批量保存多本书的笔记原始 JSON」走任务模型（POST /exports → 202 → 轮询/SSE）。单书保存 = 单书任务 + `wait_timeout` 同步逃生门（douban 已验证的模式），前端「保存此书」按钮秒级拿到结果
 - 理由：任务模型的全套基础设施（队列、worker、状态机、SSE）只为长操作支付；短操作走代理保持 API 简单直接
 
-### D3：持久化双轨——缓存（可再生）vs 导出产物（长期）
+### D3：持久化双轨——缓存（可再生）vs 已保存笔记（长期）
 
 - `cache_entries`：代理响应的原样 JSON，TTL 过期即失效，可随时清空重建，**不是资产**
-- `exports`：导出任务的产物（Markdown 文本 + 计数 + 元数据），长期保留、脱网可用，**是资产**
-- `books`：shelf/notebooks 代理调用时顺手 upsert 的书籍元数据汇总（跨两个数据源的联查视图），全量导出时补全
-- 划线/想法的**正规化明细表 v1 不做**（见非目标）：单书笔记浏览走代理缓存，历史回看走 exports 的 Markdown
+- `exports`：保存任务的产物（**笔记原始 JSON**：书/章节/划线/想法 + 计数），长期保留、脱网可用，**是资产**
+- `books`：shelf/notebooks 代理调用时顺手 upsert 的书籍元数据汇总（跨两个数据源的联查视图），全量保存时补全
+- 划线/想法的**正规化明细表 v1 不做**（见非目标）：单书笔记浏览走代理缓存，历史数据在 exports 表的原始 JSON
+- **2026-10-27 变更（按用户要求）**：移除 Markdown 渲染与下载端点（`GET /books/{id}/notes/markdown`）、CLI `export` 子命令；exports 表由 `markdown`/`book_json` 两列改为单列 `data_json` 存原始 JSON（全 fidelity，无损）。旧库检测到 markdown 列即整体重建（产物可再生）
 
 ### D4：client 全面 async 化 + trait 化
 
@@ -141,25 +142,24 @@ Base URL：`http://{host}:8081/api/v1`（默认端口 8081，避免与 douban �
 | 4 | GET | `/books/{bookId}/chapters` | `/book/chapterinfo` | TTL | 章节目录 |
 | 5 | GET | `/books/{bookId}/progress` | `/book/getprogress` | TTL | 单书进度 |
 | 6 | GET | `/books/{bookId}/notes` | `/book/bookmarklist` + `/review/list/mine` | TTL | 单书划线+想法（编排合并） |
-| 7 | GET | `/books/{bookId}/notes/markdown` | — | 长期 | 已导出的 Markdown（仅读 exports 表） |
-| 8 | GET | `/readdata?mode=&baseTime=` | `/readdata/detail` | TTL | 阅读统计 |
-| 9 | GET | `/search?keyword=&scope=&count=` | `/store/search` | 不缓存 | 书城搜索（免登录接口） |
-| 10 | GET | `/gateway/apis` | `/_list` | TTL 24h | 网关接口自描述 |
-| 11 | POST | `/gateway/call` | 任意 api_name | 不缓存 | 逃生门：透传任意网关调用 |
-| 12 | POST | `/exports` | — | — | 创建导出任务（核心入口） |
-| 13 | GET | `/exports/{task_id}` | — | — | 任务状态与进度 |
-| 14 | GET | `/exports` | — | — | 任务列表 |
-| 15 | DELETE | `/exports/{task_id}` | — | — | 删除任务（产物保留） |
-| 16 | GET | `/exports/{task_id}/result` | — | — | 结果汇总 |
-| 17 | GET | `/exports/{task_id}/events` | — | — | 进度 SSE 推流 |
-| 18 | GET | `/server/info` | — | — | 服务元信息（含网关连通性/升级提示） |
-| 19 | GET | `/healthz` | — | — | 健康检查（前缀外，不鉴权） |
+| 7 | GET | `/readdata?mode=&baseTime=` | `/readdata/detail` | TTL | 阅读统计 |
+| 8 | GET | `/search?keyword=&scope=&count=` | `/store/search` | 不缓存 | 书城搜索（免登录接口） |
+| 9 | GET | `/gateway/apis` | `/_list` | TTL 24h | 网关接口自描述 |
+| 10 | POST | `/gateway/call` | 任意 api_name | 不缓存 | 逃生门：透传任意网关调用 |
+| 11 | POST | `/exports` | — | — | 创建保存任务（核心入口） |
+| 12 | GET | `/exports/{task_id}` | — | — | 任务状态与进度 |
+| 13 | GET | `/exports` | — | — | 任务列表 |
+| 14 | DELETE | `/exports/{task_id}` | — | — | 删除任务（产物保留） |
+| 15 | GET | `/exports/{task_id}/result` | — | — | 结果汇总 |
+| 16 | GET | `/exports/{task_id}/events` | — | — | 进度 SSE 推流 |
+| 17 | GET | `/server/info` | — | — | 服务元信息（含网关连通性/升级提示） |
+| 18 | GET | `/healthz` | — | — | 健康检查（前缀外，不鉴权） |
 
 ## 4. 接口详细设计
 
 ### 4.1 同步代理的统一约定
 
-所有代理端点（#1~#6, #8, #10）响应信封：
+所有代理端点（#1~#6, #7, #9）响应信封：
 
 ```json
 {
@@ -176,7 +176,7 @@ Base URL：`http://{host}:8081/api/v1`（默认端口 8081，避免与 douban �
 
 `/notebooks` 与 `/books/{id}/notes` 是**编排端点**（服务端翻页/合并多接口），`data` 形状在服务端定义（ notebooks 为 books 数组；notes 为 `{book, chapters, bookmarks, reviews}`）。
 
-### 4.2 创建导出任务
+### 4.2 创建保存任务
 
 ```
 POST /api/v1/exports
@@ -186,8 +186,8 @@ POST /api/v1/exports
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
 | `book_ids` | string[] | 空 = 全部有笔记的书 | 缺省时服务端先拉 notebooks 全量再入队 |
-| `refresh` | bool | false | true 时已导出的书也重抓重生成 |
-| `wait_timeout` | int | 0 | 0–30s；单书导出建议 30（秒级完成，直接拿终态） |
+| `refresh` | bool | false | true 时已保存的书也重抓重写 |
+| `wait_timeout` | int | 0 | 0–30s；单书保存建议 30（秒级完成，直接拿终态） |
 
 响应 `202`（或 wait_timeout 内完成返回 `200` 终态）：
 
@@ -202,7 +202,7 @@ POST /api/v1/exports
 }
 ```
 
-`refresh=false` 时已导出且未过期的书直接标记完成（`skipped_cached`），只抓增量——这是 douban「维度缓存秒回」在单用户场景的对应物。
+`refresh=false` 时已保存的书直接标记完成（`skipped_cached`），只抓增量——这是 douban「维度缓存秒回」在单用户场景的对应物。
 
 ### 4.3 查询任务 / SSE / 结果
 
@@ -220,25 +220,16 @@ GET /api/v1/exports/{task_id}
 }
 ```
 
-- SSE（`/events`）与任务列表/删除语义与 douban 完全一致：先推快照、仅变更推送、`?token=` 兜底鉴权、15s 心跳；删除任务不删 exports 产物
+- SSE（`/events`）与任务列表/删除语义与 douban 完全一致：先推快照、仅变更推送、`?key=` 兜底鉴权、15s 心跳；删除任务不删 exports 数据
 - `/result` 返回汇总：
 
 ```json
 {
   "task_id": "wexp_...",
   "summary": { "books": 128, "bookmarks": 5230, "reviews": 412 },
-  "books": [ {"book_id": "...", "title": "...", "bookmarks": 40, "reviews": 3,
-              "markdown_url": "/api/v1/books/.../notes/markdown"} ]
+  "books": [ {"book_id": "...", "title": "...", "bookmarks": 40, "reviews": 3} ]
 }
 ```
-
-### 4.4 Markdown 端点
-
-```
-GET /api/v1/books/{bookId}/notes/markdown
-```
-
-只读 exports 表；未导出返回 `404 EXPORT_NOT_FOUND` + hint 引导 `POST /exports {"book_ids":["..."],"wait_timeout":30}`（沿用 douban「只读缓存 + 404 引导」决策，不让浏览端点隐式触发网关风暴）。`?download=1` 时加 `Content-Disposition` 作为文件下载。
 
 ## 5. 数据模型
 
@@ -288,14 +279,15 @@ CREATE TABLE export_items (
 );
 CREATE INDEX idx_export_items_due ON export_items(state, next_sync_ms);
 
--- 导出产物（长期资产）
+-- 已保存笔记（长期资产；BYOK 后复合主键 (owner, book_id)，owner = Key 指纹）
 CREATE TABLE exports (
-  book_id     TEXT PRIMARY KEY,
-  markdown    TEXT NOT NULL,
-  book_json   TEXT NOT NULL,        -- 书籍元数据快照（渲染 Markdown 所需）
+  owner       TEXT NOT NULL,
+  book_id     TEXT NOT NULL,
+  data_json   TEXT NOT NULL,        -- 笔记原始 JSON: {book, chapters, bookmarks, reviews}
   bookmarks   INTEGER NOT NULL DEFAULT 0,
   reviews     INTEGER NOT NULL DEFAULT 0,
-  exported_ms INTEGER NOT NULL
+  exported_ms INTEGER NOT NULL,
+  PRIMARY KEY (owner, book_id)
 );
 ```
 
@@ -336,7 +328,7 @@ POST /exports ──▶ queued ──(全部书命中缓存)──▶ completed
 |---|---|---|
 | 400 | `INVALID_ARGUMENT` | bookId 非法 / 枚举值错误 / 分页越界 |
 | 401 | `UNAUTHORIZED` | 访问 token 缺失/错误 |
-| 404 | `TASK_NOT_FOUND` / `EXPORT_NOT_FOUND` | 资源不存在 |
+| 404 | `TASK_NOT_FOUND` | 任务不存在 |
 | 409 | `TASK_NOT_FINISHED` | 未终态取 result |
 | 429 | `TOO_MANY_REQUESTS` / `TOO_MANY_TASKS` | 限流 / 队列满 |
 | 500 | `INTERNAL` | 未预期错误 |
@@ -371,12 +363,12 @@ POST /exports ──▶ queued ──(全部书命中缓存)──▶ completed
    - 行点击 → 抽屉：书籍详情（/books/{id}）+ 当前进度 + 章节目录（折叠面板）
 3. **笔记** `/notes`
    - 左：笔记本列表（书名、划线/笔记/想法计数、最近更新，倒序）
-   - 右（选中书）：按章节分组的划线与想法时间线（引用块样式区分划线/想法）；已导出的书显示「已导出」标记 + Markdown 下载按钮
-   - 「导出此书」按钮 → POST /exports（wait_timeout=30）→ 完成后行内提示 + 下载
+   - 右（选中书）：按章节分组的划线与想法时间线（引用块样式区分划线/想法）
+   - 「保存此书」按钮 → POST /exports（wait_timeout=30）→ 完成后行内提示（原始 JSON 落库）
    - 「全量导出」按钮 → 跳转导出页创建任务
 4. **导出任务** `/exports`
    - 任务列表（状态 tag、进度条、书数/划线数、时间）；创建任务弹窗（全部/指定书、refresh 开关）
-   - 任务详情抽屉：SSE 实时进度（douban TaskDetailDrawer 同款模式）、每本书状态列表、完成后按书下载 Markdown
+   - 任务详情抽屉：SSE 实时进度（douban TaskDetailDrawer 同款模式）、每本书状态列表
 5. 顶栏「连接」设置（apiBase + token，照抄 douban）
 
 ## 12. 代码组织与依赖增量
@@ -385,10 +377,9 @@ POST /exports ──▶ queued ──(全部书命中缓存)──▶ completed
 weread-api/
 ├── Cargo.toml              # lib + 双 bin
 ├── src/
-│   ├── lib.rs              # pub mod client/fetch/markdown/server
+│   ├── lib.rs              # pub mod client/fetch/commands/server
 │   ├── client.rs           # WereadClient 全面 async 化；GatewayError → thiserror + transient 分类
-│   ├── fetch.rs            # 编排（现 commands.rs 的翻页逻辑提出）：notebooks/bookmarklist/reviews
-│   ├── markdown.rs         # 保留
+│   ├── fetch.rs            # 编排（现 commands.rs 的翻页逻辑提出）：notebooks/bookmarklist/reviews + 展示工具
 │   ├── server/
 │   │   ├── mod.rs          # run_server 装配（thin main）
 │   │   ├── config.rs       # ServerConfig（clap derive + env）
@@ -416,11 +407,10 @@ douban 同款——全进程内，无 testcontainer：
 - `FakeGateway`：按 api_name 返回构造 JSON（notebooks 两页、bookmarklist 含 chapters、review 翻页、errcode 错误、超时），并**计数调用次数**（验证缓存命中与节流）
 - oneshot 打 router + tempdir SQLite：
   - 代理端点：首次回源、TTL 内命中缓存（fake 计数不变）、refresh 强制回源
-  - 任务：多书 partial/failed 状态机、缓存命中跳过（skipped_cached）、wait_timeout 同步返回
-  - Markdown：导出后 404 → 200、下载头
+  - 任务：多书 partial/failed 状态机、缓存命中跳过（skipped_cached）、wait_timeout 同步返回、原始 JSON 落库（直查 exports 表）
   - SSE：快照 + 终态 done
   - 鉴权/限流中间件
-- CLI 回归：改造后四个子命令行为不变
+- CLI 回归：改造后三个子命令行为不变
 
 ## 14. 非目标（v1 明确不做）
 
@@ -437,7 +427,7 @@ douban 同款——全进程内，无 testcontainer：
 |---|---|---|
 | 1 | client async 化 + GatewayError thiserror 化 + lib 重组（fetch.rs 提出）+ CLI 迁移 | CLI 四命令回归（真实 Key 冒烟） |
 | 2 | server 骨架：config/db/error/state/routes + 同步代理端点（缓存）+ 测试 | cargo test + curl 冒烟 |
-| 3 | 导出任务：service/worker + SSE + Markdown 入库 + 测试 | 单书导出 + 全量导出（真 Key） |
+| 3 | 导出任务：service/worker + SSE + 原始 JSON 入库 + 测试 | 单书导出 + 全量导出（真 Key） |
 | 4 | web 前端四页面 | pnpm dev 联调 |
 | 5 | README 更新 + 设计文档状态改「已实现」 | — |
 

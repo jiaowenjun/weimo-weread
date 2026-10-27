@@ -10,7 +10,7 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{ConnectInfo, Extension, Path, Query, State},
-    http::{StatusCode, header},
+    http::StatusCode,
     middleware::{self, Next},
     response::{
         IntoResponse, Response,
@@ -37,7 +37,6 @@ pub fn build_app(state: AppState) -> Router {
         .route("/books/{book_id}/chapters", get(get_book_chapters))
         .route("/books/{book_id}/progress", get(get_book_progress))
         .route("/books/{book_id}/notes", get(get_book_notes))
-        .route("/books/{book_id}/notes/markdown", get(get_book_markdown))
         .route("/readdata", get(get_readdata))
         .route("/search", get(get_search))
         .route("/gateway/apis", get(get_gateway_apis))
@@ -268,53 +267,6 @@ async fn get_book_notes(
         .map_err(AppError::from)?;
     let p = service::proxy_book_notes(&state, gw.as_ref(), &key, &book_id, refresh_of(&q)).await?;
     Ok(Json(service::envelope(&p)))
-}
-
-#[derive(serde::Deserialize, Default)]
-struct MarkdownQuery {
-    download: Option<bool>,
-}
-
-/// RFC 5987 percent-encode（filename* 用，保留 ASCII 字母数字与少数安全字符）
-fn pct_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() * 3);
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
-async fn get_book_markdown(
-    State(state): State<AppState>,
-    Extension(WereadKey(key)): Extension<WereadKey>,
-    Path(book_id): Path<String>,
-    Query(q): Query<MarkdownQuery>,
-) -> AppResult<Response> {
-    let file = service::get_markdown(&state, &key, &book_id).await?;
-    let content_type: axum::http::HeaderValue = "text/markdown; charset=utf-8".parse().unwrap();
-    if q.download.unwrap_or(false) {
-        let ascii_name = format!("weread-notes-{book_id}.md");
-        let encoded = pct_encode(&format!("{}.md", file.title));
-        let disposition: axum::http::HeaderValue = format!(
-            "attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"
-        )
-        .parse()
-        .unwrap();
-        return Ok((
-            [
-                (header::CONTENT_TYPE, content_type),
-                (header::CONTENT_DISPOSITION, disposition),
-            ],
-            file.markdown,
-        )
-            .into_response());
-    }
-    Ok(([(header::CONTENT_TYPE, content_type)], file.markdown).into_response())
 }
 
 #[derive(serde::Deserialize)]

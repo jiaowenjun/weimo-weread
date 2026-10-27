@@ -2,7 +2,7 @@
 //!
 //! BYOK 模型下存储按 Key 指纹（owner 列 / cache key 前缀）隔离，不同 Key
 //! 的缓存与导出产物互不混淆。表分两类：cache_entries 可再生（代理缓存）；
-//! books/exports 是长期资产，tasks/export_items 是任务调度状态。
+//! books/exports 是长期资产（exports 存笔记原始 JSON），tasks/export_items 是任务调度状态。
 
 use anyhow::{Context, Result};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -62,8 +62,7 @@ CREATE TABLE IF NOT EXISTS export_items (
 CREATE TABLE IF NOT EXISTS exports (
   owner       TEXT NOT NULL,
   book_id     TEXT NOT NULL,
-  markdown    TEXT NOT NULL,
-  book_json   TEXT NOT NULL,
+  data_json   TEXT NOT NULL,
   bookmarks   INTEGER NOT NULL DEFAULT 0,
   reviews     INTEGER NOT NULL DEFAULT 0,
   exported_ms INTEGER NOT NULL,
@@ -85,10 +84,11 @@ pub async fn connect(db_path: &std::path::Path) -> Result<SqlitePool> {
         .await
         .with_context(|| format!("连接数据库失败: {}", db_path.display()))?;
 
-    // v0.1 早期库没有 owner/api_key 列（BYOK 前的单用户 schema）：
-    // 检测到即整体重建——缓存与导出产物可再生，重建代价可接受
+    // 旧版库整体重建（产物可再生，重新抓取即可）：
+    // - v0.1 单用户 schema：exports 无 owner / tasks 无 api_key
+    // - v0.2 markdown 时代：exports 含 markdown/book_json 列，无法无损转为原始 JSON
     if needs_rebuild(&pool).await? {
-        tracing::warn!("检测到旧版单用户库，重建表结构（缓存/导出数据将重新生成）");
+        tracing::warn!("检测到旧版库，重建表结构（缓存/导出数据将重新生成）");
         for table in ["exports", "books", "export_items", "tasks", "cache_entries"] {
             sqlx::query(&format!("DROP TABLE IF EXISTS {table}"))
                 .execute(&pool)
@@ -111,17 +111,18 @@ pub async fn connect(db_path: &std::path::Path) -> Result<SqlitePool> {
 }
 
 async fn needs_rebuild(pool: &SqlitePool) -> Result<bool> {
-    let has_owner: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pragma_table_info('exports') WHERE name = 'owner'",
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
-    let has_api_key: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name = 'api_key'",
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
-    Ok(has_owner == 0 || has_api_key == 0)
+    let exports_cols: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('exports')")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+    let tasks_cols: Vec<String> =
+        sqlx::query_scalar("SELECT name FROM pragma_table_info('tasks')")
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+    // 空表列表 = 全新库；含 markdown 列 = v0.2 产物库；缺 owner/api_key = v0.1 单用户库
+    Ok(exports_cols.iter().any(|c| c == "markdown" || c == "book_json")
+        || (!exports_cols.is_empty() && !exports_cols.iter().any(|c| c == "owner"))
+        || (!tasks_cols.is_empty() && !tasks_cols.iter().any(|c| c == "api_key")))
 }

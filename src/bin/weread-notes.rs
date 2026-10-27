@@ -32,13 +32,6 @@ enum Command {
         #[arg(long, default_value_t = 100)]
         page_size: u64,
     },
-    /// 导出某本书的划线+想法为 Markdown
-    Export {
-        book_id: String,
-        /// 写入文件(默认打印到终端)
-        #[arg(short, long)]
-        output: Option<String>,
-    },
     /// 任意 api_name 直调, 参数用 k=v 形式
     Raw {
         api_name: String,
@@ -98,11 +91,6 @@ async fn run(cli: Cli) -> Result<(), (String, i32)> {
     match cli.command {
         Command::Notebooks { limit, page_size } => {
             commands::cmd_notebooks(&client, limit, page_size)
-                .await
-                .map_err(gw_err)
-        }
-        Command::Export { book_id, output } => {
-            commands::cmd_export(&client, &book_id, output.as_deref())
                 .await
                 .map_err(gw_err)
         }

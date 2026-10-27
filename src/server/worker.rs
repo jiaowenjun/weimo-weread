@@ -160,7 +160,7 @@ async fn export_item(state: &AppState, item: &DueItem) -> Result<()> {
     Ok(())
 }
 
-/// 抓取并生成单书 Markdown，写入 exports 表（按 Key 指纹隔离）。
+/// 抓取单书笔记原始 JSON，写入 exports 表（按 Key 指纹隔离）。
 async fn export_book_once(
     state: &AppState,
     gw: &dyn GatewayApi,
@@ -196,28 +196,28 @@ async fn export_book_once(
         }
     };
     let (bm_count, rv_count) = (detail.bookmarks.len() as i64, reviews.len() as i64);
-    let md = crate::markdown::build_markdown(
-        book_id,
-        &book,
-        &detail.chapters,
-        &detail.bookmarks,
-        &reviews,
-    );
+    let data = serde_json::json!({
+        "book": book,
+        "chapters": detail
+            .chapters
+            .iter()
+            .map(|(uid, title)| serde_json::json!({"chapterUid": uid, "title": title}))
+            .collect::<Vec<_>>(),
+        "bookmarks": detail.bookmarks,
+        "reviews": reviews,
+    });
 
     let now = ServerConfig::now_ms();
-    let book_json = serde_json::to_string(&book).unwrap_or_else(|_| "{}".into());
     sqlx::query(
-        "INSERT INTO exports (owner, book_id, markdown, book_json, bookmarks, reviews, exported_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        "INSERT INTO exports (owner, book_id, data_json, bookmarks, reviews, exported_ms)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(owner, book_id) DO UPDATE SET
-            markdown=excluded.markdown, book_json=excluded.book_json,
-            bookmarks=excluded.bookmarks, reviews=excluded.reviews,
-            exported_ms=excluded.exported_ms",
+            data_json=excluded.data_json, bookmarks=excluded.bookmarks,
+            reviews=excluded.reviews, exported_ms=excluded.exported_ms",
     )
     .bind(&owner)
     .bind(book_id)
-    .bind(&md)
-    .bind(&book_json)
+    .bind(data.to_string())
     .bind(bm_count)
     .bind(rv_count)
     .bind(now)

@@ -1,4 +1,4 @@
-//! 服务层——代理缓存、任务 CRUD 与视图聚合、Markdown 读取、过期清理。
+//! 服务层——代理缓存、任务 CRUD 与视图聚合、过期清理。
 //!
 //! BYOK：所有函数的 `key` 参数是请求携带的完整微信读书 API Key；
 //! 存储层用它派生的指纹（`key_fp`）隔离不同 Key 的缓存与产物。
@@ -601,16 +601,21 @@ async fn lookup_title(state: &AppState, owner: &str, book_id: &str) -> Option<St
     if let Some(title) = t.filter(|s| !s.is_empty()) {
         return Some(title);
     }
-    let bj: Option<String> =
-        sqlx::query_scalar("SELECT book_json FROM exports WHERE owner = ? AND book_id = ?")
+    let data: Option<String> =
+        sqlx::query_scalar("SELECT data_json FROM exports WHERE owner = ? AND book_id = ?")
             .bind(owner)
             .bind(book_id)
             .fetch_optional(&state.pool)
             .await
             .ok()
             .flatten();
-    bj.and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v.get("title").and_then(|t| t.as_str()).map(String::from))
+    data.and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| {
+            v.get("book")
+                .and_then(|b| b.get("title"))
+                .and_then(|t| t.as_str())
+                .map(String::from)
+        })
         .filter(|s| !s.is_empty())
 }
 
@@ -791,7 +796,6 @@ pub struct ResultBookView {
     pub bookmarks: Option<i64>,
     pub reviews: Option<i64>,
     pub error: Option<String>,
-    pub markdown_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -843,11 +847,6 @@ pub async fn task_result(state: &AppState, key: &str, task_id: &str) -> AppResul
         }
         books.push(ResultBookView {
             title: lookup_title(state, &owner, &book_id).await,
-            markdown_url: if ok {
-                Some(format!("/api/v1/books/{book_id}/notes/markdown"))
-            } else {
-                None
-            },
             book_id,
             state: item_state,
             bookmarks,
@@ -951,46 +950,6 @@ pub async fn recompute_task_status(state: &AppState, task_id: &str) -> anyhow::R
             .await?;
     }
     Ok(())
-}
-
-// --------------------------------------------------------------------------- //
-// Markdown 读取
-// --------------------------------------------------------------------------- //
-
-pub struct MarkdownFile {
-    pub markdown: String,
-    pub title: String,
-    pub bookmarks: i64,
-    pub reviews: i64,
-    pub exported_at: String,
-}
-
-pub async fn get_markdown(state: &AppState, key: &str, book_id: &str) -> AppResult<MarkdownFile> {
-    validate_book_id(book_id)?;
-    let owner = key_fp(key);
-    let row = sqlx::query(
-        "SELECT markdown, book_json, bookmarks, reviews, exported_ms FROM exports
-         WHERE owner = ? AND book_id = ?",
-    )
-    .bind(&owner)
-    .bind(book_id)
-    .fetch_optional(&state.pool)
-    .await?
-    .ok_or_else(|| AppError::ExportNotFound {
-        book_id: book_id.to_string(),
-    })?;
-    let title = serde_json::from_str::<Value>(&row.get::<String, _>("book_json"))
-        .ok()
-        .and_then(|v| v.get("title").and_then(|t| t.as_str()).map(String::from))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| book_id.to_string());
-    Ok(MarkdownFile {
-        markdown: row.get("markdown"),
-        title,
-        bookmarks: row.get("bookmarks"),
-        reviews: row.get("reviews"),
-        exported_at: ms_to_rfc3339(row.get("exported_ms")),
-    })
 }
 
 // --------------------------------------------------------------------------- //

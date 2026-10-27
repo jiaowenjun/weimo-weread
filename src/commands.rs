@@ -1,11 +1,9 @@
 //! CLI 命令实现——薄 IO 层，编排逻辑在 [`crate::fetch`]。
 
 use serde_json::{Map, Value};
-use std::collections::BTreeMap;
 
-use crate::client::{GatewayApi, GatewayError, WereadClient};
+use crate::client::{GatewayError, WereadClient};
 use crate::fetch;
-use crate::markdown;
 
 pub async fn cmd_notebooks(
     client: &WereadClient,
@@ -49,13 +47,13 @@ pub async fn cmd_notebooks(
             .or_else(|| book.get("updateTime"));
         let time = upd
             .and_then(|v| v.as_i64())
-            .and_then(markdown::fmt_time)
+            .and_then(fetch::fmt_time)
             .unwrap_or_default();
         println!(
             "{:<4} {:<14} {:<34} {:<10} {:<8} {:<8} {}",
             i + 1,
             fetch::id_str(nb.get("bookId")),
-            markdown::clip(&title, 34),
+            fetch::clip(&title, 34),
             bm,
             nt,
             rv,
@@ -64,60 +62,6 @@ pub async fn cmd_notebooks(
     }
     if shown < rows.len() {
         println!("\n(仅显示前 {} 本, 共 {} 本)", shown, rows.len());
-    }
-    Ok(())
-}
-
-/// 导出单书：划线 + 想法 → Markdown（供 CLI 与测试复用的完整编排）。
-pub async fn export_book_markdown(
-    gw: &dyn GatewayApi,
-    book_id: &str,
-) -> Result<(String, Value, i64, i64), GatewayError> {
-    let detail = fetch::fetch_note_detail(gw, book_id).await?;
-    let mut book_info = detail.book;
-    let need_fallback = book_info
-        .get("title")
-        .and_then(|t| t.as_str())
-        .map(|s| s.is_empty())
-        .unwrap_or(true);
-    if need_fallback {
-        eprintln!("(!) 划线响应缺少书籍信息, 从笔记本概览回查。");
-        let nbs = fetch::fetch_notebooks(gw, 100).await?;
-        for nb in &nbs.books {
-            if fetch::id_str(nb.get("bookId")) == book_id {
-                if let Some(b) = nb.get("book") {
-                    book_info = b.clone();
-                }
-                break;
-            }
-        }
-    }
-    let reviews = match fetch::fetch_my_reviews(gw, book_id).await {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("(!) 想法列表获取失败, 已跳过: {}", e);
-            Vec::new()
-        }
-    };
-    let chapters: BTreeMap<i64, String> = detail.chapters;
-    let (bm_count, rv_count) = (detail.bookmarks.len() as i64, reviews.len() as i64);
-    let md = markdown::build_markdown(book_id, &book_info, &chapters, &detail.bookmarks, &reviews);
-    Ok((md, book_info, bm_count, rv_count))
-}
-
-pub async fn cmd_export(
-    client: &WereadClient,
-    book_id: &str,
-    output: Option<&str>,
-) -> Result<(), GatewayError> {
-    let (md, _book_info, bm_count, rv_count) = export_book_markdown(client, book_id).await?;
-    match output {
-        Some(path) => {
-            std::fs::write(path, &md)
-                .map_err(|e| GatewayError::Io(format!("写入 {} 失败: {}", path, e)))?;
-            println!("已导出 {} 条划线 + {} 条想法 -> {}", bm_count, rv_count, path);
-        }
-        None => println!("{}", md),
     }
     Ok(())
 }

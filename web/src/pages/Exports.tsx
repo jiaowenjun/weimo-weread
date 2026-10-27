@@ -62,7 +62,7 @@ export default function Exports() {
         <Popconfirm
           key="delete"
           title="删除任务记录？"
-          description="已导出的 Markdown 产物不受影响"
+          description="已保存的笔记数据不受影响"
           onConfirm={async () => {
             try {
               await api.deleteTask(r.task_id);
