@@ -5,7 +5,7 @@
 - 协议与坑：[docs/weread-api-projects-deep-dive.md](docs/weread-api-projects-deep-dive.md) §2/§2.5
 - 官方 17 接口能力清单：[docs/weread-api-capabilities.md](docs/weread-api-capabilities.md)
 - 服务器设计（架构决策、API 规范、数据模型）：[docs/weread-server-design.md](docs/weread-server-design.md)（已实现）
-- 前端说明：[web/README.md](web/README.md)
+- 前端说明：[frontend/admin/README.md](frontend/admin/README.md)
 
 ## 使用（服务器 + 管理后台）
 
@@ -14,7 +14,7 @@
 （SSE 走 `?key=` 参数）。不同 Key 的缓存与已保存笔记按指纹相互隔离。
 
 ```bash
-./target/release/weread-notes-server    # 默认 0.0.0.0:8081，无需任何凭据环境变量
+./backend/target/release/weread-notes-server    # 默认 0.0.0.0:8081，无需任何凭据环境变量
 ```
 
 ```bash
@@ -36,14 +36,14 @@ curl -H "X-Weread-Key: wrk-xxxx" http://127.0.0.1:8081/api/v1/saves/{task_id}/re
 管理后台（Vite + React + antd，概览/书架/笔记/保存任务四页面）：
 
 ```bash
-cd web && pnpm install && pnpm dev    # http://localhost:5174（代理到 :8081）
+cd frontend/admin && pnpm install && pnpm dev    # http://localhost:5174（代理到 :8081）
 pnpm build                            # 纯静态 dist/，同源或跨源部署
 ```
 
 ## 架构（一图）
 
 ```
-浏览器(web/) ─▶ axum API 层
+浏览器(frontend/admin/) ─▶ axum API 层
                  ├─ 同步代理（/shelf /notebooks /readdata /books/...）─▶ TTL 缓存(SQLite) ─▶ ThrottledGateway ─▶ 官方 Agent Gateway
                  └─ 异步保存（/saves）─▶ DB 即队列 ─▶ 单 worker 逐书抓取 → 原始 JSON 入库(notes 表) → SSE 进度
 ```
@@ -71,7 +71,7 @@ pnpm build                            # 纯静态 dist/，同源或跨源部署
 ## 测试
 
 ```bash
-cargo test    # 25 个集成测试：FakeGateway + tempdir SQLite + oneshot，全进程内
+cd backend && cargo test    # 25 个集成测试：FakeGateway + tempdir SQLite + oneshot，全进程内
 ```
 
 ## 已知限制

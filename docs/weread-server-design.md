@@ -20,7 +20,7 @@
 - [8. 限速与防护](#8-限速与防护)
 - [9. 错误响应规范](#9-错误响应规范)
 - [10. 认证与安全](#10-认证与安全)
-- [11. 前端设计（web/）](#11-前端设计web)
+- [11. 前端设计（frontend/admin/）](#11-前端设计frontendadmin)
 - [12. 代码组织与依赖增量](#12-代码组织与依赖增量)
 - [13. 测试策略](#13-测试策略)
 - [14. 非目标（v1 明确不做）](#14-非目标v1-明确不做)
@@ -54,7 +54,7 @@ douban-api 的架构是围绕「慢速 HTML 爬虫」设计的；weread 的上�
 ## 1. 总体架构
 
 ```
-浏览器(web/) ──HTTP──▶ API 层（axum）
+浏览器(frontend/admin/) ──HTTP──▶ API 层（axum）
                         │  /shelf /notebooks /readdata...  ──▶ TTL 缓存命中? ──▶ 直接返回
                         │  /saves(POST)                     ──▶ 创建异步任务
                         ▼
@@ -348,7 +348,7 @@ POST /saves ──▶ queued ──(全部书命中缓存)──▶ completed
 - `POST /gateway/call` 逃生门透传任意只读调用；公网部署需自行评估（任何人都能用自己的 Key 使用本服务）
 - CORS：默认关闭，`WEREAD_SERVER_CORS_ORIGINS` 配置
 
-## 11. 前端设计（web/）
+## 11. 前端设计（frontend/admin/）
 
 完全复用 douban-api 的 web 骨架：Vite + React 18 + TypeScript + antd 5 + ProComponents（ProLayout）+ pnpm；`api.ts`（localStorage 存 apiBase/token）、连接设置 Popover、SSE 订阅模式照搬；vite proxy 指向 :8081。
 
@@ -375,25 +375,28 @@ POST /saves ──▶ queued ──(全部书命中缓存)──▶ completed
 
 ```
 weread-api/
-├── Cargo.toml              # lib + 双 bin
-├── src/
-│   ├── lib.rs              # pub mod client/fetch/commands/server
-│   ├── client.rs           # WereadClient 全面 async 化；GatewayError → thiserror + transient 分类
-│   ├── fetch.rs            # 编排（现 commands.rs 的翻页逻辑提出）：notebooks/bookmarklist/reviews + 展示工具
-│   ├── server/
-│   │   ├── mod.rs          # run_server 装配（thin main）
-│   │   ├── config.rs       # ServerConfig（clap derive + env）
-│   │   ├── error.rs        # AppError → IntoResponse 信封
-│   │   ├── gateway.rs      # GatewayApi trait + ReqwestGateway + FakeGateway
-│   │   ├── db.rs           # SQLite bootstrap（内嵌 SQL，不用 sqlx migrate）
-│   │   ├── state.rs        # AppState：wakeup watch / progress broadcast / 熔断 / 限流
-│   │   ├── service.rs      # 代理缓存、任务 CRUD、视图聚合、清理循环
-│   │   ├── worker.rs       # 保存 worker（泛型 F: GatewayApi）
-│   │   └── routes.rs       # axum 路由 + 中间件 + SSE
-│   └── bin/
-│       └── weread-notes.rs # 现 main.rs 移入，#[tokio::main]，命令不变
-├── tests/server_tests.rs   # oneshot + FakeGateway + tempdir
-└── web/                    # 见第 11 节
+├── backend/
+│   ├── Cargo.toml          # lib + 双 bin
+│   ├── src/
+│   │   ├── lib.rs          # pub mod client/fetch/commands/server
+│   │   ├── client.rs       # WereadClient 全面 async 化；GatewayError → thiserror + transient 分类
+│   │   ├── fetch.rs        # 编排（现 commands.rs 的翻页逻辑提出）：notebooks/bookmarklist/reviews + 展示工具
+│   │   ├── server/
+│   │   │   ├── mod.rs      # run_server 装配（thin main）
+│   │   │   ├── config.rs   # ServerConfig（clap derive + env）
+│   │   │   ├── error.rs    # AppError → IntoResponse 信封
+│   │   │   ├── gateway.rs  # GatewayApi trait + ReqwestGateway + FakeGateway
+│   │   │   ├── db.rs       # SQLite bootstrap（内嵌 SQL，不用 sqlx migrate）
+│   │   │   ├── state.rs    # AppState：wakeup watch / progress broadcast / 熔断 / 限流
+│   │   │   ├── service.rs  # 代理缓存、任务 CRUD、视图聚合、清理循环
+│   │   │   ├── worker.rs   # 保存 worker（泛型 F: GatewayApi）
+│   │   │   └── routes.rs   # axum 路由 + 中间件 + SSE
+│   │   └── bin/
+│   │       └── weread-notes.rs # 现 main.rs 移入，#[tokio::main]，命令不变
+│   └── tests/server_tests.rs   # oneshot + FakeGateway + tempdir
+├── frontend/
+│   └── admin/                  # 见第 11 节
+└── docs/
 ```
 
 bin 命名：`weread-notes`（CLI，保留）/ `weread-notes-server`（新增）。

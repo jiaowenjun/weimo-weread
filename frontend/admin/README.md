@@ -20,11 +20,11 @@
 ## 开发
 
 ```bash
-# 1. 启动后端（仓库根目录，默认 127.0.0.1:8081；BYOK 无需任何 Key 环境变量）
-cargo run --bin weread-notes-server
+# 1. 启动后端（默认 127.0.0.1:8081；BYOK 无需任何 Key 环境变量）
+cd backend && cargo run --bin weread-notes-server
 
 # 2. 启动前端（另一个终端，Vite 已配置 /api 与 /healthz 代理到 8081）
-cd web && ppm install && pnpm dev   # 打开 http://localhost:5174
+cd frontend/admin && pnpm install && pnpm dev   # 打开 http://localhost:5174
 ```
 
 ## 构建与部署
