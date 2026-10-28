@@ -1,4 +1,4 @@
-# weread-notes
+# weimo-weread
 
 基于**微信读书官方 Agent Gateway**（`wrk-` API Key）的读书笔记服务：书架/笔记/统计的代理服务 + 笔记原始数据落库，形态为 **HTTP 服务器 + 管理后台**。
 
@@ -14,7 +14,7 @@
 （SSE 走 `?key=` 参数）。不同 Key 的缓存与已同步笔记按指纹相互隔离。
 
 ```bash
-./backend/target/release/weread-notes-server    # 默认 0.0.0.0:8081，无需任何凭据环境变量
+./backend/target/release/weimo-weread-server    # 默认 0.0.0.0:8081，无需任何凭据环境变量
 ```
 
 ```bash

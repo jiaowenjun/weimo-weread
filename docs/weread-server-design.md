@@ -1,4 +1,4 @@
-# weread-notes 服务器化设计方案（v1）
+# weimo-weread 服务器化设计方案（v1）
 
 > 状态：**已实现**（v0.1.0，含 25 个 oneshot 集成测试 + 真机冒烟）
 > 日期：2026-10-27（设计稿）/ 2026-10-27（实施完成）
@@ -31,11 +31,11 @@
 
 ## 0. 目标与约束——与 douban-api 的关键差异
 
-把现有 CLI（`weread-notes`）的能力服务化：**通过官方 Agent Gateway 代理本人微信读书数据并同步笔记（书架、笔记、统计），并提供管理前端**。
+把现有 CLI（`weimo-weread`）的能力服务化：**通过官方 Agent Gateway 代理本人微信读书数据并同步笔记（书架、笔记、统计），并提供管理前端**。
 
 douban-api 的架构是围绕「慢速 HTML 爬虫」设计的；weread 的上游是**官方 JSON API**，问题域不同，**不能照抄，要按差异重新推导**：
 
-| 维度 | douban-api | weread-api | 对本设计的直接影响 |
+| 维度 | douban-api | weimo-weread | 对本设计的直接影响 |
 |---|---|---|---|
 | 上游 | 豆瓣公开页 HTML 抓取 | 官方 Agent Gateway（JSON，Bearer `wrk-` Key） | 无需 HTML 解析；错误是结构化 errcode |
 | 上游速度 | 全量 ≥1 分钟（20 页 × ≥2s 限速） | 单接口毫秒~秒级 | **大部分接口可同步代理**，只有全量同步需要异步任务 |
@@ -374,7 +374,7 @@ POST /syncs ──▶ queued ──(全部书命中缓存)──▶ completed
 ## 12. 代码组织与依赖增量
 
 ```
-weread-api/
+weimo-weread/
 ├── backend/
 │   ├── Cargo.toml          # lib + 双 bin
 │   ├── src/
@@ -392,14 +392,14 @@ weread-api/
 │   │   │   ├── worker.rs   # 同步 worker（泛型 F: GatewayApi）
 │   │   │   └── routes.rs   # axum 路由 + 中间件 + SSE
 │   │   └── bin/
-│   │       └── weread-notes.rs # 现 main.rs 移入，#[tokio::main]，命令不变
+│   │       └── weimo-weread-server.rs # 现 main.rs 移入，#[tokio::main]，命令不变
 │   └── tests/server_tests.rs   # oneshot + FakeGateway + tempdir
 ├── frontend/
 │   └── admin/                  # 见第 11 节
 └── docs/
 ```
 
-bin 命名：`weread-notes`（CLI，保留）/ `weread-notes-server`（新增）。
+bin 命名：`weimo-weread`（CLI，保留）/ `weimo-weread-server`（新增）。
 
 依赖新增（对齐 douban 的生产版本组合）：`axum 0.8`、`tokio(full)`、`sqlx 0.8(sqlite)`、`tower-http(cors)`、`thiserror`、`tracing` + `tracing-subscriber`、`tokio-stream`、`rand`；`reqwest` 去 `blocking` feature 转 async；dev：`tempfile`、`tower`。
 

@@ -105,7 +105,7 @@
 
 | 高阶功能 | 编排方式 | 验证项目 |
 |---|---|---|
-| 单书笔记导出（Markdown/Obsidian/Notion） | notebooks → bookmarklist + review/list/mine | 本仓库 weread-notes(Rust)、obsidian 系插件 |
+| 单书笔记导出（Markdown/Obsidian/Notion） | notebooks → bookmarklist + review/list/mine | 本仓库 weimo-weread(Rust)、obsidian 系插件 |
 | 阅读概况卡片 | shelf/sync → 排序 → N × getprogress | OpenWeRead 的 `profile` 模块 |
 | 阅读年度报告/自画像 | readdata/detail(overall+annually) + notebooks 汇总 | weread-report、read-persona 等 |
 | 知识地图与缺口推荐 | shelf/sync × user/notebooks 交叉（书架=兴趣，笔记=真读过）→ store/search 验证上架 | huashu-weread 的 advisor 工作流 |

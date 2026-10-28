@@ -74,7 +74,7 @@ impl WereadClient {
             .ok_or(GatewayError::MissingAuth)?;
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
-            .user_agent("weread-notes-rs/0.1")
+            .user_agent("weimo-weread-rs/0.1")
             .build()
             .map_err(|e| GatewayError::Network { message: e.to_string(), attempts: 1 })?;
         Ok(Self {

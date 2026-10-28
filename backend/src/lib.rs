@@ -1,4 +1,4 @@
-//! weread-notes 库——服务器使用的网关客户端与编排。
+//! weimo-weread 库——服务器使用的网关客户端与编排。
 //!
 //! - [`client`]：官方 Agent Gateway 协议实现（async）与 [`client::GatewayApi`] 抽象
 //! - [`fetch`]：多接口翻页/合并编排

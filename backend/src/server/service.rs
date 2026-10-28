@@ -1017,7 +1017,7 @@ pub async fn server_info(state: &AppState) -> AppResult<Value> {
         .await?;
     let circuit_remaining = state.circuit_remaining_ms();
     Ok(json!({
-        "name": "weread-notes-server",
+        "name": "weimo-weread-server",
         "version": env!("CARGO_PKG_VERSION"),
         "key_mode": "byok",
         "gateway": {

@@ -6,5 +6,5 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "info".into()),
         )
         .init();
-    weread_notes::server::run_server().await
+    weimo_weread::server::run_server().await
 }

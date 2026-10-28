@@ -6,12 +6,12 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use tower::ServiceExt;
 
-use weread_notes::client::{GatewayApi, GatewayError};
-use weread_notes::server::config::ServerConfig;
-use weread_notes::server::db;
-use weread_notes::server::routes::build_app;
-use weread_notes::server::state::AppState;
-use weread_notes::server::worker;
+use weimo_weread::client::{GatewayApi, GatewayError};
+use weimo_weread::server::config::ServerConfig;
+use weimo_weread::server::db;
+use weimo_weread::server::routes::build_app;
+use weimo_weread::server::state::AppState;
+use weimo_weread::server::worker;
 
 // --------------------------------------------------------------------------- //
 // FakeGateway
@@ -842,7 +842,7 @@ async fn server_info_shape() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let v = body_json(resp).await;
-    assert_eq!(v["name"], json!("weread-notes-server"));
+    assert_eq!(v["name"], json!("weimo-weread-server"));
     assert_eq!(v["key_mode"], json!("byok"));
     assert_eq!(v["gateway"]["skill_version"], json!("1.0.5"));
     // BYOK：服务端不持有 Key，info 不回显任何 Key 信息

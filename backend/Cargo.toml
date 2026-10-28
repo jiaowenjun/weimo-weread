@@ -1,17 +1,17 @@
 [package]
-name = "weread-notes"
+name = "weimo-weread"
 version = "0.1.0"
 edition = "2021"
 description = "微信读书官方 Agent Gateway 笔记服务（HTTP 服务器 + 管理后台）"
 license = "MIT"
 
 [lib]
-name = "weread_notes"
+name = "weimo_weread"
 path = "src/lib.rs"
 
 [[bin]]
-name = "weread-notes-server"
-path = "src/bin/weread-notes-server.rs"
+name = "weimo-weread-server"
+path = "src/bin/weimo-weread-server.rs"
 
 [dependencies]
 anyhow = "1"

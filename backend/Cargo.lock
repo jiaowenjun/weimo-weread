@@ -2482,7 +2482,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "weread-notes"
+name = "weimo-weread"
 version = "0.1.0"
 dependencies = [
  "anyhow",

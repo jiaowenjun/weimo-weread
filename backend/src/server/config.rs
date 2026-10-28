@@ -7,7 +7,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "weread-notes-server", about = "微信读书 Agent Gateway 代理/笔记同步服务器")]
+#[command(name = "weimo-weread-server", about = "微信读书 Agent Gateway 代理/笔记同步服务器")]
 pub struct ServerConfig {
     /// 监听地址
     #[arg(long, env = "WEREAD_SERVER_BIND", default_value = "0.0.0.0:8081")]

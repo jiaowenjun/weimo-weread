@@ -14,7 +14,7 @@
 - [4. 项目二：shiquda/weread-cli（24★）——面向人类与 Agent 的 CLI](#4-项目二shiqudaweread-cli24面向人类与-agent-的-cli)
 - [5. 项目三：Ceelog/OpenWeRead（23★）——TypeScript SDK 与 CLI](#5-项目三ceelogopenweread23typescript-sdk-与-cli)
 - [6. 三项目横向对比](#6-三项目横向对比)
-- [7. 对 weread-api 项目的启示](#7-对-weread-api-项目的启示)
+- [7. 对 weimo-weread 项目的启示](#7-对-weimo-weread-项目的启示)
 - [8. 参考链接](#8-参考链接)
 
 ---
@@ -377,7 +377,7 @@ for await (const book of weread.notes.notebooksAll()) { ... }   // 内置异步�
 
 ---
 
-## 7. 对 weread-api 项目的启示
+## 7. 对 weimo-weread 项目的启示
 
 若在本仓库自建 API 层，三个项目给出了完整的外部经验：
 

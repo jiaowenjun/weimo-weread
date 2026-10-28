@@ -333,7 +333,7 @@ GitHub 搜索 "weread" 共约 **993 个仓库**。生态明显分为两代：
 
 ### 7.2 自研 API 项目（本项目场景）的建议
 
-若要在 `weread-api` 中自建 API 层：
+若要在 `weimo-weread` 中自建 API 层：
 
 1. **底座选官方 Key 通道**：稳定、合规、有版本升级机制；接口语义参考官方 `skills/` 文档（`/shelf/sync`、`/book/info` 等）
 2. **SDK 实现参考**：[OpenWeRead](https://github.com/Ceelog/OpenWeRead)（TS、覆盖最全）、[weread-omni](https://github.com/teng-lin/weread-omni)（40 项操作、含读写）

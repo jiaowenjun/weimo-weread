@@ -12,7 +12,7 @@ pub mod worker;
 use anyhow::{Context, Result};
 use clap::Parser as _;
 
-/// 装配并运行服务器（供 bin/weread-notes-server.rs 调用）。
+/// 装配并运行服务器（供 bin/weimo-weread-server.rs 调用）。
 /// BYOK：此处不加载任何 Key，网关客户端按请求携带的 Key 经注册表解析。
 pub async fn run_server() -> Result<()> {
     let config = config::ServerConfig::parse();
@@ -31,7 +31,7 @@ pub async fn run_server() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&config.bind)
         .await
         .with_context(|| format!("监听 {} 失败", config.bind))?;
-    tracing::info!("weread-notes-server listening on {}", config.bind);
+    tracing::info!("weimo-weread-server listening on {}", config.bind);
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
